@@ -1,0 +1,20 @@
+This project is based on the original work:
+
+Python SEC Edgar
+Author: Ryan S. McCoy
+Repository: https://github.com/ryansmccoy/py-sec-edgar
+
+The original project has been substantially modified, extended, and restructured.
+
+Modifications include:
+- Refdata normalization layer
+- EDGAR index ingestion and parquet materialization
+- Backfill pipeline architecture
+- Filing-party extraction system
+- CLI interface redesign
+- Runtime compatibility improvements (pandas/numpy)
+- Testing and documentation updates
+
+These modifications were developed by:
+
+Nicholas Wagner (2026)

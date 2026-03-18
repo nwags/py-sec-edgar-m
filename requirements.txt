@@ -1,0 +1,15 @@
+beautifulsoup4
+feedparser
+html5lib
+openpyxl
+requests>=2.32,<3
+xlrd
+python-dotenv
+pandas
+lxml
+chardet>=5,<6
+numpy
+pytest
+click
+pyarrow
+sphinx

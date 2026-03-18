@@ -1,0 +1,36 @@
+<SEC-DOCUMENT>0001777777-25-000010.txt : 20250201
+<XML>
+<ownershipDocument>
+  <schemaVersion>X0506</schemaVersion>
+  <documentType>4</documentType>
+  <issuer>
+    <issuerCik>0000123456</issuerCik>
+    <issuerName>ACME CORP</issuerName>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0001777777</rptOwnerCik>
+      <rptOwnerName>JANE DOE</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>1</isDirector>
+      <isOfficer>1</isOfficer>
+      <isTenPercentOwner>0</isTenPercentOwner>
+      <isOther>0</isOther>
+      <officerTitle>CEO</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0001888888</rptOwnerCik>
+      <rptOwnerName>VALUE PARTNERS LP</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>0</isOfficer>
+      <isTenPercentOwner>1</isTenPercentOwner>
+      <isOther>0</isOther>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+</ownershipDocument>
+</XML>
