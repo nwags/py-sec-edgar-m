@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+from urllib3.exceptions import LocationValueError
 
 from py_sec_edgar.config import load_config
 from py_sec_edgar.rate_limit import get_shared_rate_limiter
@@ -91,29 +92,48 @@ class ProxyRequest(object):
             time.sleep(random.randrange(1, 3))
 
     def _status_reason(self, status_code: int) -> str:
-        if status_code == 403:
-            return "forbidden"
-        if status_code == 404:
-            return "not_found"
-        if status_code == 429:
-            return "rate_limited"
-        if 500 <= status_code <= 599:
-            return "server_error"
         return "http_error"
 
     def _is_transient(self, status_code: int) -> bool:
         return status_code == 429 or 500 <= status_code <= 599
 
-    def _record_failure(self, *, url: str, filepath: str, attempt: int, reason: str, status_code: int | None, error: str | None):
+    def _record_failure(
+        self,
+        *,
+        url: str,
+        filepath: str,
+        attempt: int,
+        reason: str,
+        status_code: int | None,
+        error: str | None,
+        error_class: str | None = None,
+        retry_exhausted: bool = False,
+    ):
+        error_text = None if error is None else str(error)
+        if error_text and len(error_text) > 240:
+            error_text = error_text[:240]
         self.last_failure = {
             "url": url,
             "filepath": filepath,
             "attempt": attempt,
             "reason": reason,
             "status_code": status_code,
-            "error": error,
+            "error": error_text,
+            "error_class": error_class,
+            "retry_exhausted": bool(retry_exhausted),
         }
         logger.warning("Download failed", extra={"download_failure": self.last_failure})
+
+    def _normalize_request_exception_reason(self, exc: Exception) -> str:
+        if isinstance(exc, requests.Timeout):
+            return "timeout"
+        if isinstance(exc, requests.ConnectionError):
+            return "connection_error"
+        if isinstance(exc, requests.exceptions.SSLError):
+            return "ssl_error"
+        if isinstance(exc, (requests.exceptions.InvalidURL, requests.exceptions.MissingSchema, LocationValueError, ValueError)):
+            return "malformed_url"
+        return "request_exception"
 
     def _perform_get(self, url: str, *, stream: bool):
         self.rate_limiter.wait()
@@ -142,6 +162,7 @@ class ProxyRequest(object):
                         reason=reason,
                         status_code=status_code,
                         error=None,
+                        retry_exhausted=not (self._is_transient(status_code) and attempt < self.retry_counter),
                     )
                     if self._is_transient(status_code) and attempt < self.retry_counter:
                         time.sleep(self.backoff_seconds * attempt)
@@ -149,13 +170,16 @@ class ProxyRequest(object):
                     return None
                 return response
             except requests.RequestException as exc:
+                reason = self._normalize_request_exception_reason(exc)
                 self._record_failure(
                     url=url,
                     filepath="",
                     attempt=attempt,
-                    reason="request_exception",
+                    reason=reason,
                     status_code=None,
                     error=str(exc),
+                    error_class=type(exc).__name__,
+                    retry_exhausted=attempt >= self.retry_counter,
                 )
                 if attempt < self.retry_counter:
                     time.sleep(self.backoff_seconds * attempt)
@@ -182,6 +206,7 @@ class ProxyRequest(object):
                         reason=reason,
                         status_code=status_code,
                         error=None,
+                        retry_exhausted=not (self._is_transient(status_code) and attempt < self.retry_counter),
                     )
                     if self._is_transient(status_code) and attempt < self.retry_counter:
                         time.sleep(self.backoff_seconds * attempt)
@@ -194,9 +219,10 @@ class ProxyRequest(object):
                         url=url,
                         filepath=str(target),
                         attempt=attempt,
-                        reason="unexpected_content_type",
+                        reason="http_error",
                         status_code=status_code,
                         error=f"content_type={content_type}",
+                        retry_exhausted=True,
                     )
                     return False
 
@@ -210,17 +236,32 @@ class ProxyRequest(object):
                 return True
 
             except requests.RequestException as exc:
+                reason = self._normalize_request_exception_reason(exc)
                 self._record_failure(
                     url=url,
                     filepath=str(target),
                     attempt=attempt,
-                    reason="request_exception",
+                    reason=reason,
                     status_code=None,
                     error=str(exc),
+                    error_class=type(exc).__name__,
+                    retry_exhausted=attempt >= self.retry_counter,
                 )
                 if attempt < self.retry_counter:
                     time.sleep(self.backoff_seconds * attempt)
                     continue
+                return False
+            except OSError as exc:
+                self._record_failure(
+                    url=url,
+                    filepath=str(target),
+                    attempt=attempt,
+                    reason="local_io_error",
+                    status_code=None,
+                    error=str(exc),
+                    error_class=type(exc).__name__,
+                    retry_exhausted=True,
+                )
                 return False
             finally:
                 if tmp_path.exists() and not target.exists():

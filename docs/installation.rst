@@ -1,24 +1,27 @@
-
 ============
 Installation
 ============
 
-
-From sources
-------------
-
-The sources for Python SEC Edgar Data can be downloaded from the `Github repo`_.
-
-You can either clone the public repository:
+From source:
 
 .. code-block:: console
 
-    $ git clone git://github.com/ryansmccoy/py_sec_edgar
+    git clone <your fork or working remote>
+    cd py-sec-edgar-m
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    pip install -e .
 
-Once you have a copy of the source, you can install it with:
+Sanity-check the CLI:
 
 .. code-block:: console
 
-    $ pip install -r requirements.txt
+    py-sec-edgar --help
 
-.. _Github repo: https://github.com/ryansmccoy/py_sec_edgar
+First-run workflow:
+
+.. code-block:: console
+
+    py-sec-edgar refdata refresh
+    py-sec-edgar index refresh --skip-if-exists --save-idx-as-csv

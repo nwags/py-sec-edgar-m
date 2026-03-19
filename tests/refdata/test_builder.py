@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -46,7 +47,8 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
     config = load_config(tmp_path)
     _write_raw_sources(config.raw_refdata_root)
 
-    written = run_refdata_refresh(config)
+    result = run_refdata_refresh(config)
+    written = result["written"]
 
     expected = {
         "issuers",
@@ -58,6 +60,9 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
     assert set(written.keys()) == expected
     for path in written.values():
         assert path.exists()
+    assert result["artifact_count"] == len(expected)
+    assert isinstance(result["artifact_paths"], list)
+    assert result["elapsed_seconds"] >= 0
 
     issuers = pd.read_parquet(written["issuers"])
     assert (issuers["issuer_cik"].str.len() == 10).all()
@@ -83,3 +88,19 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
     fund_2110 = fund_entities[fund_entities["entity_cik"] == "0000002110"].iloc[0]
     assert fund_2110["entity_name"] == "New Fund"
     assert fund_entities["source_updated_at"].notna().all()
+
+
+def test_refdata_refresh_uses_fallback_raw_sources_when_project_root_raw_is_empty(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    fallback_raw = tmp_path / "bundled_sources" / "sec_sources"
+    _write_raw_sources(fallback_raw)
+    config_with_fallback = replace(config, canonical_raw_refdata_root=fallback_raw)
+
+    result = run_refdata_refresh(config_with_fallback)
+
+    assert result["raw_sources_root_used"] == str(fallback_raw.resolve())
+    assert result["raw_sources_root_fallback_used"] is True
+    assert str(config.raw_refdata_root.resolve()) in result["raw_sources_roots_checked"]
+    assert str(fallback_raw.resolve()) in result["raw_sources_roots_checked"]
+    for path in result["written"].values():
+        assert str(path).startswith(str(config.normalized_refdata_root.resolve()))

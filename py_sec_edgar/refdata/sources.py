@@ -21,6 +21,13 @@ KNOWN_SOURCE_URLS: Dict[str, str] = {
 
 _INVESTMENT_PATTERN = re.compile(r"investment-company-series-class-(\d{4})\.csv$")
 _CIK_LOOKUP_PATTERN = re.compile(r"^(?P<name>.*):(?P<cik>\d{1,10}):\s*$")
+_REQUIRED_RAW_FILES = (
+    "company_tickers.json",
+    "company_tickers_exchange.json",
+    "company_tickers_mf.json",
+    "ticker.txt",
+    "cik-lookup-data.txt",
+)
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,38 @@ def discover_latest_investment_company_file(raw_root: Path) -> Path:
 
     ranked.sort(key=lambda item: (item[0], item[1]), reverse=True)
     return ranked[0][2]
+
+
+def _is_usable_raw_sources_root(raw_root: Path) -> bool:
+    if not raw_root.exists() or not raw_root.is_dir():
+        return False
+    for name in _REQUIRED_RAW_FILES:
+        if not (raw_root / name).exists():
+            return False
+    return any(raw_root.glob("investment-company-series-class-*.csv"))
+
+
+def resolve_raw_sources_root(primary_root: Path, fallback_root: Path | None = None) -> tuple[Path, list[Path]]:
+    checked: list[Path] = []
+    candidates = [primary_root]
+    if fallback_root is not None:
+        candidates.append(fallback_root)
+
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in checked:
+            continue
+        checked.append(resolved)
+        if _is_usable_raw_sources_root(resolved):
+            return resolved, checked
+
+    checked_text = ", ".join(str(path) for path in checked)
+    raise FileNotFoundError(
+        "Raw SEC source inputs are missing. "
+        f"Checked: {checked_text}. "
+        "Populate <project_root>/refdata/sec_sources or run from a repo/package context "
+        "that includes bundled refdata/sec_sources."
+    )
 
 
 def _read_json(path: Path) -> dict:

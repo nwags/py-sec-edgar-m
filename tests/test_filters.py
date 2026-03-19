@@ -73,6 +73,15 @@ def test_build_cik_filter_set_with_only_malformed_inputs_returns_empty_set(tmp_p
     assert selected == set()
 
 
+def test_load_normalized_filter_tables_missing_inputs_is_actionable(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError) as excinfo:
+        load_normalized_filter_tables(tmp_path / "missing_root")
+
+    message = str(excinfo.value)
+    assert "Normalized filter inputs missing at" in message
+    assert "py-sec-edgar refdata refresh" in message
+
+
 def test_apply_filing_filters_supports_cik_forms_and_date_range() -> None:
     filings = pandas.DataFrame(
         [

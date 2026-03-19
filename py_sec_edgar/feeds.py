@@ -1,6 +1,8 @@
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+import time
 from urllib import parse
 from urllib.parse import urljoin
 
@@ -29,14 +31,58 @@ from py_sec_edgar.utilities import edgar_and_local_differ, walk_dir_fullpath, ge
 _IDX_REQUIRED_COLUMNS = {"CIK", "Form Type", "Date Filed", "Filename"}
 
 
+@dataclass(frozen=True)
+class _FeedRuntimeContext:
+    normalized_refdata_root: Path
+    merged_idx_path: Path
+    ticker_list_path: Path
+    archives_base_url: str
+    forms_list: list[str]
+
+
+def _non_empty_str(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _resolve_feed_runtime_context(config_obj) -> _FeedRuntimeContext:
+    ref_dir_raw = _non_empty_str(getattr(config_obj, "REF_DIR", None))
+    if ref_dir_raw is None:
+        raise ValueError("Feed runtime config is missing REF_DIR")
+    ref_root = Path(ref_dir_raw)
+
+    # Deterministic rule: normalized root is always derived from REF_DIR for feed loading.
+    normalized_refdata_root = ref_root / "normalized"
+
+    merged_idx_raw = _non_empty_str(getattr(config_obj, "MERGED_IDX_FILEPATH", None))
+    merged_idx_path = Path(merged_idx_raw) if merged_idx_raw else (ref_root / "merged_idx_files.pq")
+
+    ticker_list_raw = _non_empty_str(getattr(config_obj, "TICKER_LIST_FILEPATH", None))
+    ticker_list_path = Path(ticker_list_raw) if ticker_list_raw else (ref_root / "tickers.csv")
+
+    archives_base_url = _non_empty_str(getattr(config_obj, "edgar_Archives_url", None)) or "https://www.sec.gov/Archives/"
+
+    forms_list_raw = getattr(config_obj, "forms_list", None)
+    forms_list = list(forms_list_raw) if forms_list_raw else []
+
+    return _FeedRuntimeContext(
+        normalized_refdata_root=normalized_refdata_root,
+        merged_idx_path=merged_idx_path,
+        ticker_list_path=ticker_list_path,
+        archives_base_url=archives_base_url,
+        forms_list=forms_list,
+    )
+
+
 def _ensure_required_columns(df: pd.DataFrame, required: set[str], context: str) -> None:
     missing = sorted(required.difference(df.columns))
     if missing:
         raise ValueError(f"{context} is missing required columns: {', '.join(missing)}")
 
 
-def _load_merged_idx_filings() -> pd.DataFrame:
-    merged_path = Path(CONFIG.MERGED_IDX_FILEPATH)
+def _load_merged_idx_filings(merged_path: Path) -> pd.DataFrame:
     if not merged_path.exists():
         raise FileNotFoundError(f"Merged index file not found: {merged_path}")
     df = pq.read_table(str(merged_path)).to_pandas()
@@ -44,8 +90,7 @@ def _load_merged_idx_filings() -> pd.DataFrame:
     return df.sort_values("Date Filed", ascending=False)
 
 
-def _read_legacy_ticker_list() -> list[str]:
-    ticker_path = Path(CONFIG.TICKER_LIST_FILEPATH)
+def _read_legacy_ticker_list(ticker_path: Path) -> list[str]:
     if not ticker_path.exists():
         raise FileNotFoundError(f"Ticker list file not found: {ticker_path}")
     df = pd.read_csv(ticker_path, header=None)
@@ -66,22 +111,22 @@ def load_filings_feed(
     date_from=None,
     date_to=None,
 ):
-    normalized_root = os.path.join(CONFIG.REF_DIR, "normalized")
-    issuers, entities = load_normalized_filter_tables(Path(normalized_root))
+    ctx = _resolve_feed_runtime_context(CONFIG)
+    issuers, entities = load_normalized_filter_tables(ctx.normalized_refdata_root)
 
     logging.info('\n\n\n\tLoaded IDX files\n\n\n')
 
-    df_merged_idx_filings = _load_merged_idx_filings()
+    df_merged_idx_filings = _load_merged_idx_filings(ctx.merged_idx_path)
 
     bridge_tickers = list(issuer_tickers or [])
     if ticker_list_filter and issuer_tickers is None:
         # Legacy compatibility bridge: ticker list file is still accepted, but
         # resolution is performed against normalized parquet reference data.
-        bridge_tickers = _read_legacy_ticker_list()
+        bridge_tickers = _read_legacy_ticker_list(ctx.ticker_list_path)
 
     selected_forms = forms
     if form_list_filter:
-        selected_forms = list(selected_forms or CONFIG.forms_list)
+        selected_forms = list(selected_forms or ctx.forms_list)
 
     cik_filter_set = build_cik_filter_set(
         issuers=issuers,
@@ -100,7 +145,7 @@ def load_filings_feed(
     )
 
     df_filings = df_merged_idx_filings.assign(
-        url=df_merged_idx_filings["Filename"].map(lambda x: urljoin(CONFIG.edgar_Archives_url, str(x)))
+        url=df_merged_idx_filings["Filename"].map(lambda x: urljoin(ctx.archives_base_url, str(x)))
     )
 
     return df_filings
@@ -176,7 +221,7 @@ def merge_idx_files():
     # out_path = os.path.join(CONFIG.REF_DIR, 'merged_idx_files.csv')
     # df_idx.to_csv(out_path)
 
-    pq_filepath = os.path.join(CONFIG.REF_DIR, 'merged_idx_files.pq')
+    pq_filepath = CONFIG.MERGED_IDX_FILEPATH
 
     if os.path.exists(pq_filepath):
         os.remove(pq_filepath)
@@ -208,6 +253,8 @@ def convert_idx_to_csv(filepath):
 # "./{YEAR}/QTR{NUMBER}/"
 
 def update_full_index_feed(save_idx_as_csv=True, skip_if_exists=False):
+    started_at = time.monotonic()
+    activity_events = []
 
     dates_quarters = generate_folder_names_years_quarters(CONFIG.index_start_date, CONFIG.index_end_date)
 
@@ -220,8 +267,10 @@ def update_full_index_feed(save_idx_as_csv=True, skip_if_exists=False):
 
     if g.GET_FILE(CONFIG.edgar_full_master_url, latest_full_index_master):
         convert_idx_to_csv(latest_full_index_master)
+        activity_events.append({"stage": "index_refresh", "status": "success", "item": latest_full_index_master, "detail": "latest_master"})
     else:
         logging.warning("Unable to download latest master index; continuing with quarter index files")
+        activity_events.append({"stage": "index_refresh", "status": "failed", "item": latest_full_index_master, "detail": "latest_master"})
 
     pending_downloads = []
     existing_idx_to_convert = []
@@ -263,17 +312,37 @@ def update_full_index_feed(save_idx_as_csv=True, skip_if_exists=False):
         for filepath in existing_idx_to_convert:
             logging.info('\n\n\tConverting existing idx to csv\n\n')
             convert_idx_to_csv(filepath)
+            activity_events.append({"stage": "index_refresh", "status": "success", "item": filepath, "detail": "converted_existing"})
         for result in download_results:
             if result.success:
                 logging.info('\n\n\tConverting idx to csv\n\n')
                 convert_idx_to_csv(result.filepath)
+                activity_events.append({"stage": "index_refresh", "status": "success", "item": result.filepath, "detail": "downloaded_and_converted"})
 
     logging.info('\n\n\tMerging IDX files\n\n')
+    merge_completed = False
     try:
         merge_idx_files()
+        merge_completed = True
     except FileNotFoundError as exc:
         logging.warning(str(exc))
+        activity_events.append({"stage": "index_refresh", "status": "failed", "item": CONFIG.MERGED_IDX_FILEPATH, "detail": "merge_skipped"})
     logging.info('\n\n\tCompleted Index Download\n\n\t')
+    if merge_completed:
+        activity_events.append({"stage": "index_refresh", "status": "success", "item": CONFIG.MERGED_IDX_FILEPATH, "detail": "merge_completed"})
+
+    downloaded_count = int(sum(1 for result in download_results if result.success))
+    failed_count = int(sum(1 for result in download_results if not result.success))
+    converted_count = int(len(existing_idx_to_convert) + downloaded_count)
+    return {
+        "download_attempted_count": int(len(download_results)),
+        "download_succeeded_count": downloaded_count,
+        "download_failed_count": failed_count,
+        "converted_count": converted_count,
+        "merge_completed": bool(merge_completed),
+        "total_elapsed_seconds": round(time.monotonic() - started_at, 3),
+        "activity_events": activity_events[-200:],
+    }
 
 
 def download_edgar_filings_xbrl_rss_files():

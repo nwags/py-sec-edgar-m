@@ -60,7 +60,9 @@ def load_normalized_filter_tables(normalized_root: Path) -> tuple[pd.DataFrame, 
     entities_path = normalized_root / "entities.parquet"
     if not issuers_path.exists() or not entities_path.exists():
         raise FileNotFoundError(
-            "Normalized filter inputs missing. Expected issuers.parquet and entities.parquet under refdata/normalized/."
+            f"Normalized filter inputs missing at {normalized_root}. "
+            "Expected issuers.parquet and entities.parquet. "
+            "Run `py-sec-edgar refdata refresh` for the current configured normalized root."
         )
 
     issuers = pd.read_parquet(issuers_path)

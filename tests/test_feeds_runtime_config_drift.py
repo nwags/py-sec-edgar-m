@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -69,3 +70,49 @@ def test_parse_monthly_graceful_when_legacy_paths_missing(monkeypatch):
 
     # Should return cleanly without raising when legacy config drift exists.
     assert feeds.parse_monthly() is None
+
+
+def test_load_filings_feed_uses_ref_dir_derived_normalized_root_when_normalized_attr_is_stale(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("PY_SEC_EDGAR_PROJECT_ROOT", "/tmp/py-sec-edgar-smoke")
+
+    cfg = get_config()
+    monkeypatch.setattr(feeds, "CONFIG", cfg)
+
+    ref_root = tmp_path / "refdata"
+    normalized_root = ref_root / "normalized"
+    normalized_root.mkdir(parents=True, exist_ok=True)
+
+    # Intentionally stale path that should be ignored by feed runtime context.
+    monkeypatch.setattr(cfg, "NORMALIZED_REFDATA_DIR", "/tmp/py-sec-edgar-smoke/refdata/normalized", raising=False)
+
+    monkeypatch.setattr(cfg, "REF_DIR", str(ref_root), raising=False)
+    monkeypatch.setattr(cfg, "MERGED_IDX_FILEPATH", str(ref_root / "merged_idx_files.pq"), raising=False)
+    monkeypatch.setattr(cfg, "TICKER_LIST_FILEPATH", str(ref_root / "tickers.csv"), raising=False)
+    monkeypatch.setattr(cfg, "edgar_Archives_url", "https://www.sec.gov/Archives/", raising=False)
+    monkeypatch.setattr(cfg, "forms_list", ["8-K"], raising=False)
+
+    pandas.DataFrame([{"issuer_cik": "0000320193", "ticker": "AAPL", "issuer_name": "Apple"}]).to_parquet(
+        normalized_root / "issuers.parquet",
+        index=False,
+    )
+    pandas.DataFrame([{"entity_cik": "0000320193", "entity_name": "Apple Inc.", "is_issuer": True}]).to_parquet(
+        normalized_root / "entities.parquet",
+        index=False,
+    )
+    pandas.DataFrame(
+        [
+            {
+                "CIK": "320193",
+                "Form Type": "8-K",
+                "Date Filed": "2025-01-10",
+                "Filename": "edgar/data/320193/a.txt",
+            }
+        ]
+    ).to_parquet(Path(cfg.MERGED_IDX_FILEPATH), index=False)
+    Path(cfg.TICKER_LIST_FILEPATH).write_text("AAPL\n", encoding="utf-8")
+
+    df = feeds.load_filings_feed(ticker_list_filter=False, form_list_filter=False)
+    assert len(df.index) == 1
+    assert df.iloc[0]["CIK"] == "320193"

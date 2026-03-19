@@ -1,4 +1,4 @@
-.PHONY: clean clean-test clean-pyc clean-build clean-dev-artifacts docs help
+.PHONY: clean clean-test clean-pyc clean-build clean-dev-artifacts docs docs-html docs-clean help
 .DEFAULT_GOAL := help
 
 define BROWSER_PYSCRIPT
@@ -55,7 +55,7 @@ clean-dev-artifacts: clean-test ## remove common local developer artifacts
 	rm -fr docs/_build/
 
 lint: ## check style with flake8
-	flake8 py-sec-edgar tests
+	flake8 py_sec_edgar tests
 
 test: ## run tests quickly with the default Python
 	py.test
@@ -69,13 +69,14 @@ coverage: ## check code coverage quickly with the default Python
 	coverage html
 	$(BROWSER) htmlcov/index.html
 
-docs: ## generate Sphinx HTML documentation, including API docs
-	rm -f docs/py-sec-edgar.rst
-	rm -f docs/modules.rst
-	sphinx-apidoc -o docs/ py-sec-edgar
-	$(MAKE) -C docs clean
+docs: docs-html ## build docs html
+
+docs-html: ## generate Sphinx HTML documentation
 	$(MAKE) -C docs html
 	$(BROWSER) docs/_build/html/index.html
+
+docs-clean: ## remove Sphinx build artifacts
+	$(MAKE) -C docs clean
 
 servedocs: docs ## compile the docs watching for changes
 	watchmedo shell-command -p '*.rst' -c '$(MAKE) -C docs html' -R -D .

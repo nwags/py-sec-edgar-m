@@ -187,8 +187,56 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
 - Added actionable CLI error for missing merged index artifact in backfill flows: run `py-sec-edgar index refresh` first.
 - Standardized local coverage/dev artifact hygiene around `htmlcov/` and `coverage_*/` cleanup/ignore paths.
 
+## Migration notes (Patch 23A runtime UX + path configurability)
+
+- Added operator-facing per-command runtime controls on `index refresh` and `backfill`: `--verbose`, `--quiet`, `--log-level`, and `--log-file`.
+- Added bounded recent-activity rendering for verbose runs while preserving stable summary output in normal mode.
+- Preserved `--summary-json` machine mode with JSON-only stdout; activity/log output routes to stderr and/or log file.
+- Added typed config env overrides for runtime paths (`PY_SEC_EDGAR_DOWNLOAD_ROOT`, `PY_SEC_EDGAR_MERGED_INDEX_PATH`, `PY_SEC_EDGAR_NORMALIZED_REFDATA_ROOT`) with backward-compatible defaults.
+
+## Migration notes (Operator hardening: filing-party extraction + refdata UX)
+
+- Added runtime UX parity flags to `py-sec-edgar refdata refresh` (`--verbose`, `--quiet`, `--log-level`, `--log-file`) with stable summary output and bounded verbose activity output.
+- Hardened SC 13D/A and SC 13G/A filing-party header parsing for real SEC header subsection variants (`COMPANY DATA:`, `FILING VALUES:`) so trustworthy role rows are emitted instead of zero-row misses.
+- Added coherent filing-party stage counters in backfill summaries/JSON, including `filing_party_candidate_count`, `filing_party_attempted_count`, `filing_party_zero_record_count`, and invariant-coherent successful/failed filing counts.
+- Kept normalized-input missing errors as `FileNotFoundError` while improving message content to include configured root path and explicit `py-sec-edgar refdata refresh` remediation guidance.
+
+## Migration notes (Docs and tooling modernization patch)
+
+- Rewrote the top-level README as the current operator entrypoint with working CLI quick-start, runtime visibility flags, data/artifact layout, and environment overrides.
+- Aligned Sphinx docs (`index`, `installation`, `usage`, and included README) with the current staged CLI workflow and artifact model.
+- Modernized docs/build tooling in root `Makefile`, `docs/conf.py`, `readthedocs.yml`, and `tox.ini` for current Python/Sphinx usage.
+- Removed stale Travis CI configuration (`.travis.yml`) as legacy/unused infrastructure.
+
 ## Migration notes (Extraction compatibility/runtime hardening patch)
 
 - Added regression coverage to keep extraction header parsing compatible with current pandas releases (no `pandas.np` usage).
 - Added extraction-path stdout-noise guard coverage to keep CLI summary output clean and script-safe.
 - Tightened backfill persistence reporting so `filing_party_persist_path` is only surfaced when a filing-party parquet artifact actually exists.
+
+## Migration notes (Alternate-root raw refdata bootstrap hardening patch)
+
+- `refdata refresh` now resolves raw SEC source inputs with a deterministic fallback chain: configured `<project_root>/refdata/sec_sources` first, then canonical bundled `refdata/sec_sources`.
+- Fallback is limited to raw-source bootstrap for `refdata refresh`; runtime artifact destinations (download/cache root, merged index path, normalized output root) remain bound to configured runtime paths.
+- Missing raw inputs now fail with a clearer actionable error listing checked roots and remediation guidance.
+
+## Migration notes (README positioning + roadmap cleanup patch)
+
+- Repositioned README framing from special-situations-first to general-purpose EDGAR ingestion/operator workflow, with special situations called out as one example use case.
+- Added explicit design-philosophy boundaries (ingestion-focused, metadata-oriented extraction, downstream-analysis handoff).
+- Replaced legacy TODO list and historical performance blocks with a structured prioritized roadmap.
+
+## Migration notes (Local lookup/indexing patch)
+
+- Added operator-facing local lookup index artifacts under `refdata/normalized/`:
+  - `local_lookup_filings.parquet`
+  - `local_lookup_artifacts.parquet`
+- Added `py-sec-edgar lookup refresh` to deterministically rebuild local lookup artifacts from merged index metadata, local download/extracted paths, and optional `filing_parties.parquet`.
+- Added `py-sec-edgar lookup query` for fast local operator lookup across filings/artifacts with bounded human-readable output and `--json` machine mode.
+
+## Migration notes (Lookup hardening patch)
+
+- Hardened default lookup refresh/query behavior to be local-first for filings scope: `local_lookup_filings.parquet` now contains only local-present filings, deduped by accession (fallback filename).
+- Added deterministic filings rollup fields (`submission_path_count`, local extracted-file rollups, and max-preserved filing-party counts) with stable representative field selection.
+- Preserved path-granular artifact inventory under `local_lookup_artifacts.parquet`.
+- Added explicit merged-index-wide filings inventory opt-in via `py-sec-edgar lookup refresh --include-global-filings` and query access via `py-sec-edgar lookup query --scope filings --all`.

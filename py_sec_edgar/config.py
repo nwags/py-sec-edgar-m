@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+import os
 from pathlib import Path
 from typing import List
 
@@ -48,7 +49,10 @@ class AppConfig:
     project_root: Path
     refdata_root: Path
     raw_refdata_root: Path
+    canonical_raw_refdata_root: Path
     normalized_refdata_root: Path
+    download_root: Path
+    merged_index_path: Path
     user_agent: str
     request_timeout_connect: float
     request_timeout_read: float
@@ -58,14 +62,30 @@ class AppConfig:
     forms: List[str]
 
     @classmethod
-    def from_project_root(cls, project_root: Path | str) -> "AppConfig":
+    def from_project_root(
+        cls,
+        project_root: Path | str,
+        *,
+        use_env_overrides: bool = True,
+    ) -> "AppConfig":
         root = Path(project_root).resolve()
         refdata_root = root / "refdata"
+        normalized_refdata_root = refdata_root / "normalized"
+        download_root = root / ".sec_cache" / "Archives"
+        merged_index_path = refdata_root / "merged_idx_files.pq"
+
+        if use_env_overrides:
+            normalized_refdata_root = _path_from_env("PY_SEC_EDGAR_NORMALIZED_REFDATA_ROOT") or normalized_refdata_root
+            download_root = _path_from_env("PY_SEC_EDGAR_DOWNLOAD_ROOT") or download_root
+            merged_index_path = _path_from_env("PY_SEC_EDGAR_MERGED_INDEX_PATH") or merged_index_path
         return cls(
             project_root=root,
             refdata_root=refdata_root,
             raw_refdata_root=refdata_root / "sec_sources",
-            normalized_refdata_root=refdata_root / "normalized",
+            canonical_raw_refdata_root=get_canonical_raw_refdata_root(),
+            normalized_refdata_root=normalized_refdata_root.resolve(),
+            download_root=download_root.resolve(),
+            merged_index_path=merged_index_path.resolve(),
             user_agent="py-sec-edgar/0.1.0 (research@example.com)",
             request_timeout_connect=10.0,
             request_timeout_read=30.0,
@@ -79,13 +99,31 @@ class AppConfig:
         self.refdata_root.mkdir(parents=True, exist_ok=True)
         self.raw_refdata_root.mkdir(parents=True, exist_ok=True)
         self.normalized_refdata_root.mkdir(parents=True, exist_ok=True)
+        self.download_root.mkdir(parents=True, exist_ok=True)
+        self.merged_index_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def load_config(project_root: Path | str | None = None) -> AppConfig:
+    use_env_overrides = project_root is None
     if project_root is None:
-        project_root = Path(__file__).resolve().parents[1]
-    return AppConfig.from_project_root(project_root)
+        project_root = _path_from_env("PY_SEC_EDGAR_PROJECT_ROOT") or Path(__file__).resolve().parents[1]
+    return AppConfig.from_project_root(project_root, use_env_overrides=use_env_overrides)
+
+
+def get_canonical_raw_refdata_root() -> Path:
+    """Deterministic bundled raw SEC source locator (independent of CWD)."""
+    return (Path(__file__).resolve().parents[1] / "refdata" / "sec_sources").resolve()
 
 
 def now_utc_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+
+
+def _path_from_env(name: str) -> Path | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    return Path(value).expanduser()

@@ -31,15 +31,21 @@ class Config:
 
         self.BASE_DIR = str(app.project_root)
         self.REF_DIR = str(app.refdata_root)
-        self.SEC_DIR = str(app.project_root / ".sec_cache")
-        self.EDGAR_DIR = str(Path(self.SEC_DIR) / "Archives" / "edgar")
+        archives_root = Path(app.download_root)
+        if archives_root.name.lower() == "archives":
+            sec_root = archives_root.parent
+        else:
+            sec_root = archives_root
+        self.SEC_DIR = str(sec_root)
+        self.EDGAR_DIR = str(archives_root / "edgar")
         self.DATA_DIR = str(Path(self.EDGAR_DIR) / "data")
         self.MONTHLY_DIR = str(Path(self.EDGAR_DIR) / "monthly")
         self.FULL_INDEX_DIR = str(Path(self.EDGAR_DIR) / "full-index")
         self.DAILY_INDEX_DIR = str(Path(self.EDGAR_DIR) / "daily-index")
         self.FILING_DIR = str(Path(self.EDGAR_DIR) / "filings")
+        self.NORMALIZED_REFDATA_DIR = str(app.normalized_refdata_root)
 
-        self.MERGED_IDX_FILEPATH = str(Path(self.REF_DIR) / "merged_idx_files.pq")
+        self.MERGED_IDX_FILEPATH = str(app.merged_index_path)
         self.TICKER_LIST_FILEPATH = str(Path(self.REF_DIR) / "tickers.csv")
         self.TICKER_CIK_FILEPATH = str(Path(self.REF_DIR) / "cik_tickers.csv")
         self.TXT_FILING_DIR = str(Path(self.EDGAR_DIR) / "data" / "CIK" / "FOLDER")

@@ -22,6 +22,8 @@ class DownloadResult:
     reason: str | None
     status_code: int | None
     error: str | None
+    error_class: str | None
+    retry_exhausted: bool
 
 
 def _resolve_download_workers(max_workers: int | None) -> int:
@@ -33,16 +35,33 @@ def _resolve_download_workers(max_workers: int | None) -> int:
 
 def _run_single_download(task: DownloadTask, downloader_config=None) -> DownloadResult:
     downloader = ProxyRequest(CONFIG=downloader_config)
-    success = downloader.GET_FILE(task.url, task.filepath)
-    failure = downloader.last_failure or {}
-    return DownloadResult(
-        url=task.url,
-        filepath=task.filepath,
-        success=bool(success),
-        reason=failure.get("reason"),
-        status_code=failure.get("status_code"),
-        error=failure.get("error"),
-    )
+    try:
+        success = downloader.GET_FILE(task.url, task.filepath)
+        failure = downloader.last_failure or {}
+        return DownloadResult(
+            url=task.url,
+            filepath=task.filepath,
+            success=bool(success),
+            reason=failure.get("reason"),
+            status_code=failure.get("status_code"),
+            error=failure.get("error"),
+            error_class=failure.get("error_class"),
+            retry_exhausted=bool(failure.get("retry_exhausted", not bool(success))),
+        )
+    except Exception as exc:  # pragma: no cover - defensive guard
+        error_text = str(exc)
+        if len(error_text) > 240:
+            error_text = error_text[:240]
+        return DownloadResult(
+            url=task.url,
+            filepath=task.filepath,
+            success=False,
+            reason="request_exception",
+            status_code=None,
+            error=error_text,
+            error_class=type(exc).__name__,
+            retry_exhausted=True,
+        )
 
 
 def run_bounded_downloads(
@@ -64,7 +83,25 @@ def run_bounded_downloads(
             for task in work
         }
         for future in as_completed(futures):
-            results.append(future.result())
+            task = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:  # pragma: no cover - defensive guard
+                error_text = str(exc)
+                if len(error_text) > 240:
+                    error_text = error_text[:240]
+                results.append(
+                    DownloadResult(
+                        url=task.url,
+                        filepath=task.filepath,
+                        success=False,
+                        reason="request_exception",
+                        status_code=None,
+                        error=error_text,
+                        error_class=type(exc).__name__,
+                        retry_exhausted=True,
+                    )
+                )
 
     # Deterministic ordering for downstream processing.
     results.sort(key=lambda item: item.filepath)

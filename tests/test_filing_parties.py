@@ -57,6 +57,34 @@ def test_extract_filing_parties_from_file_fixture() -> None:
     assert all(row["form_type"] == "SC 13D/A" for row in records)
 
 
+def test_extract_filing_parties_sc13da_real_header_variant_fixture() -> None:
+    fixture = Path("tests/fixtures/filings/sc13da_real_header_variant.txt")
+    records = extract_filing_parties_from_file(
+        filing_filepath=fixture,
+        form_type="SC 13D/A",
+        filing_date="2024-12-11",
+        source_filename="edgar/data/72971/0001193125-24-275026.txt",
+    )
+    assert len(records) >= 2
+    roles = {row["party_role"] for row in records}
+    assert "issuer" in roles
+    assert "reporting_owner" in roles
+
+
+def test_extract_filing_parties_sc13ga_real_header_variant_fixture() -> None:
+    fixture = Path("tests/fixtures/filings/sc13ga_real_header_variant.txt")
+    records = extract_filing_parties_from_file(
+        filing_filepath=fixture,
+        form_type="SC 13G/A",
+        filing_date="2024-12-04",
+        source_filename="edgar/data/19617/0000019617-24-000658.txt",
+    )
+    assert len(records) >= 2
+    roles = {row["party_role"] for row in records}
+    assert "issuer" in roles
+    assert "reporting_owner" in roles
+
+
 def test_extract_filing_parties_from_text_form4_roles() -> None:
     raw_text = Path("tests/fixtures/filings/form4_sample.txt").read_text(encoding="utf-8")
     records = extract_filing_parties_from_text(

@@ -1,8 +1,11 @@
-Welcome to Python SEC Edgar's documentation!
-==============================================
+py-sec-edgar Documentation
+==========================
+
+Operator-focused documentation for the current refactored ingestion workflow.
 
 .. toctree::
    :maxdepth: 2
+   :caption: Guides
 
    readme
    installation

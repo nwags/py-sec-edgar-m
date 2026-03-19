@@ -3,12 +3,12 @@ Credits
 =======
 
 Original Development Lead
-------------------------
+-------------------------
 
 * Ryan S. McCoy <github@ryansmccoy.com>
 
 Current Maintainer / Lead Developer
-----------------------------------
+-----------------------------------
 
 * Nicholas Wagner
 

@@ -89,7 +89,8 @@ def test_no_file_persisted_on_failed_status(tmp_path: Path):
     assert ok is False
     assert not target.exists()
     assert not target.with_suffix(".txt.tmp").exists()
-    assert downloader.last_failure["reason"] == "not_found"
+    assert downloader.last_failure["reason"] == "http_error"
+    assert downloader.last_failure["status_code"] == 404
 
 
 def test_no_file_persisted_on_html_error_page(tmp_path: Path):
@@ -103,7 +104,7 @@ def test_no_file_persisted_on_html_error_page(tmp_path: Path):
 
     assert ok is False
     assert not target.exists()
-    assert downloader.last_failure["reason"] == "unexpected_content_type"
+    assert downloader.last_failure["reason"] == "http_error"
 
 
 def test_retry_on_request_exception_bounded(tmp_path: Path):

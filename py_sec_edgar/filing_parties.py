@@ -81,11 +81,6 @@ def _extract_sections(header_text: str) -> dict[str, list[list[str]]]:
             current = marker
             continue
         if current:
-            upper = clean.upper()
-            # End current section at a new all-caps labeled section marker.
-            if upper.endswith(":") and upper == clean and len(upper) < 80:
-                flush()
-                continue
             current_lines.append(clean)
 
     flush()

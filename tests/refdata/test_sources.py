@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from py_sec_edgar.refdata.sources import discover_latest_investment_company_file, load_all_sources
+import pytest
+
+from py_sec_edgar.refdata.sources import discover_latest_investment_company_file, load_all_sources, resolve_raw_sources_root
 
 
 def _write_raw_sources(raw_root: Path) -> None:
@@ -74,3 +76,38 @@ def test_load_all_sources_normalizes_cik_and_ticker(tmp_path: Path) -> None:
     tricky = loaded.cik_lookup[loaded.cik_lookup["entity_cik"] == "0001234567"].iloc[0]
     assert tricky["entity_name"] == "ALPHA: BETA GP, LLC"
     assert "MALFORMED LINE WITHOUT CIK" not in loaded.cik_lookup["entity_name"].fillna("").tolist()
+
+
+def test_resolve_raw_sources_root_uses_primary_when_available(tmp_path: Path) -> None:
+    primary = tmp_path / "primary" / "sec_sources"
+    fallback = tmp_path / "fallback" / "sec_sources"
+    _write_raw_sources(primary)
+    _write_raw_sources(fallback)
+
+    selected, checked = resolve_raw_sources_root(primary, fallback)
+    assert selected == primary.resolve()
+    assert checked == [primary.resolve()]
+
+
+def test_resolve_raw_sources_root_falls_back_when_primary_missing(tmp_path: Path) -> None:
+    primary = tmp_path / "primary" / "sec_sources"
+    fallback = tmp_path / "fallback" / "sec_sources"
+    _write_raw_sources(fallback)
+
+    selected, checked = resolve_raw_sources_root(primary, fallback)
+    assert selected == fallback.resolve()
+    assert checked == [primary.resolve(), fallback.resolve()]
+
+
+def test_resolve_raw_sources_root_raises_actionable_error_when_all_missing(tmp_path: Path) -> None:
+    primary = tmp_path / "primary" / "sec_sources"
+    fallback = tmp_path / "fallback" / "sec_sources"
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        resolve_raw_sources_root(primary, fallback)
+
+    message = str(excinfo.value)
+    assert "Raw SEC source inputs are missing" in message
+    assert str(primary.resolve()) in message
+    assert str(fallback.resolve()) in message
+    assert "refdata/sec_sources" in message

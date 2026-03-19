@@ -9,7 +9,7 @@ def run_index_refresh(
     *,
     save_idx_as_csv: bool = True,
     skip_if_exists: bool = True,
-) -> None:
+) -> dict:
     # Keep behavior explicit and routed through a pipeline entrypoint.
     config.ensure_runtime_dirs()
-    feeds.update_full_index_feed(save_idx_as_csv=save_idx_as_csv, skip_if_exists=skip_if_exists)
+    return feeds.update_full_index_feed(save_idx_as_csv=save_idx_as_csv, skip_if_exists=skip_if_exists)
