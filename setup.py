@@ -13,6 +13,7 @@ with open('HISTORY.rst') as history_file:
 
 requirements = ['beautifulsoup4',
                 'feedparser',
+                'fastapi>=0.110,<1',
                 'html5lib',
                 'openpyxl',
                 'requests>=2.32,<3',
@@ -24,7 +25,8 @@ requirements = ['beautifulsoup4',
                 'numpy',
                 'pytest',
                 'click',
-                'pyarrow']
+                'pyarrow',
+                'uvicorn>=0.30,<1']
 
 setup_requirements = ['pytest-runner', ]
 

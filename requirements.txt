@@ -1,5 +1,6 @@
 beautifulsoup4
 feedparser
+fastapi>=0.110,<1
 html5lib
 openpyxl
 requests>=2.32,<3
@@ -13,3 +14,4 @@ pytest
 click
 pyarrow
 sphinx
+uvicorn>=0.30,<1

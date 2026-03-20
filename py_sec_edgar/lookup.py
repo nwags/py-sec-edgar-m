@@ -79,15 +79,19 @@ def _build_extracted_dir_file_map(merged: pd.DataFrame, download_root: Path) -> 
     return {directory: _list_files(Path(directory)) for directory in sorted(extracted_dirs)}
 
 
-def _build_filing_placements(
-    config: AppConfig,
-) -> tuple[pd.DataFrame, bool, int]:
+def _load_merged_index_df(config: AppConfig) -> pd.DataFrame:
     merged_path = config.merged_index_path
     if not merged_path.exists():
         raise FileNotFoundError(f"Merged index file not found: {merged_path}. Run `py-sec-edgar index refresh` first.")
-
     merged = pd.read_parquet(merged_path)
     _require_columns(merged, _MERGED_IDX_REQUIRED_COLUMNS, "Merged index dataset")
+    return merged
+
+
+def _build_filing_placements_from_merged(
+    config: AppConfig,
+    merged: pd.DataFrame,
+) -> tuple[pd.DataFrame, bool, int]:
     extracted_dir_file_map = _build_extracted_dir_file_map(merged, config.download_root)
 
     filing_parties_available, filing_party_counts = _load_filing_party_counts(config)
@@ -152,6 +156,13 @@ def _build_filing_placements(
     return placements_df, filing_parties_available, int(len(extracted_dir_file_map))
 
 
+def _build_filing_placements(
+    config: AppConfig,
+) -> tuple[pd.DataFrame, bool, int]:
+    merged = _load_merged_index_df(config)
+    return _build_filing_placements_from_merged(config, merged)
+
+
 def _build_artifacts_lookup(placements_df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for row in placements_df.to_dict(orient="records"):
@@ -210,6 +221,57 @@ def _build_artifacts_lookup(placements_df: pd.DataFrame) -> pd.DataFrame:
             na_position="last",
         ).reset_index(drop=True)
     return artifacts_df
+
+
+def _empty_filings_df() -> pd.DataFrame:
+    return _dedupe_filings(pd.DataFrame())
+
+
+def _empty_artifacts_df() -> pd.DataFrame:
+    return _build_artifacts_lookup(pd.DataFrame())
+
+
+def _normalize_filename(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text.lstrip("/")
+
+
+def _normalize_accession(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _load_lookup_or_empty(path: Path, empty_df_factory) -> pd.DataFrame:
+    if not path.exists():
+        return empty_df_factory()
+    df = pd.read_parquet(path)
+    expected_cols = list(empty_df_factory().columns)
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = None
+    return df[expected_cols]
+
+
+def _sort_filings_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    return df.sort_values(
+        ["filing_date", "form_type", "filing_cik", "filename"],
+        ascending=[False, True, True, True],
+        na_position="last",
+    ).reset_index(drop=True)
+
+
+def _sort_artifacts_df(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    return df.sort_values(
+        ["accession_number", "artifact_type", "artifact_path"],
+        ascending=[True, True, True],
+        na_position="last",
+    ).reset_index(drop=True)
 
 
 def _dedupe_filings(placements_df: pd.DataFrame) -> pd.DataFrame:
@@ -336,6 +398,154 @@ def refresh_local_lookup_indexes(
         "global_filings_index_written": bool(global_filings_df is not None),
         "global_filings_row_count": int(len(global_filings_df.index)) if global_filings_df is not None else 0,
         "filing_parties_available": bool(filing_parties_available),
+        "elapsed_seconds": round(time.monotonic() - started_at, 3),
+    }
+
+
+def register_local_filings_in_lookup(
+    config: AppConfig,
+    *,
+    warmed_filenames: list[str] | None = None,
+    warmed_accession_numbers: list[str] | None = None,
+) -> dict[str, object]:
+    started_at = time.monotonic()
+    config.ensure_runtime_dirs()
+
+    requested_filenames = {name for name in (_normalize_filename(v) for v in (warmed_filenames or [])) if name}
+    requested_accessions = {acc for acc in (_normalize_accession(v) for v in (warmed_accession_numbers or [])) if acc}
+    attempted_input_count = int(len(requested_filenames) + len(requested_accessions))
+
+    filings_path = local_lookup_filings_path(config)
+    artifacts_path = local_lookup_artifacts_path(config)
+
+    skip_reasons: dict[str, int] = {}
+    safe_to_use = True
+
+    if attempted_input_count == 0:
+        safe_to_use = False
+        skip_reasons["no_warmed_inputs"] = 1
+        local_filings_df = _load_lookup_or_empty(filings_path, _empty_filings_df)
+        local_artifacts_df = _load_lookup_or_empty(artifacts_path, _empty_artifacts_df)
+        local_filings_df.to_parquet(filings_path, index=False)
+        local_artifacts_df.to_parquet(artifacts_path, index=False)
+        return {
+            "attempted_input_count": attempted_input_count,
+            "matched_merged_rows_count": 0,
+            "registered_filing_row_count": 0,
+            "registered_artifact_row_count": 0,
+            "skipped_count": int(sum(skip_reasons.values())),
+            "skip_reasons": skip_reasons,
+            "safe_to_use": bool(safe_to_use),
+            "touched_accession_count": 0,
+            "touched_filename_count": 0,
+            "filings_index_path": str(filings_path),
+            "artifacts_index_path": str(artifacts_path),
+            "elapsed_seconds": round(time.monotonic() - started_at, 3),
+        }
+
+    merged = _load_merged_index_df(config)
+    rows = merged.to_dict(orient="records")
+
+    matched_rows: list[dict[str, object]] = []
+    matched_filenames: set[str] = set()
+    matched_accessions: set[str] = set()
+    for row in rows:
+        filename = _normalize_filename(row.get("Filename"))
+        if filename is None:
+            continue
+        accession = _derive_accession_number(filename)
+        by_filename = filename in requested_filenames
+        by_accession = accession in requested_accessions if accession else False
+        if not (by_filename or by_accession):
+            continue
+        matched_rows.append(row)
+        matched_filenames.add(filename)
+        if accession:
+            matched_accessions.add(accession)
+
+    unmatched_filenames = requested_filenames.difference(matched_filenames)
+    unmatched_accessions = requested_accessions.difference(matched_accessions)
+    if unmatched_filenames:
+        safe_to_use = False
+        skip_reasons["filename_not_found_in_merged_index"] = len(unmatched_filenames)
+    if unmatched_accessions:
+        safe_to_use = False
+        skip_reasons["accession_not_found_in_merged_index"] = len(unmatched_accessions)
+
+    if not matched_rows:
+        safe_to_use = False
+        skip_reasons["no_merged_index_matches"] = skip_reasons.get("no_merged_index_matches", 0) + 1
+        local_filings_df = _load_lookup_or_empty(filings_path, _empty_filings_df)
+        local_artifacts_df = _load_lookup_or_empty(artifacts_path, _empty_artifacts_df)
+        local_filings_df.to_parquet(filings_path, index=False)
+        local_artifacts_df.to_parquet(artifacts_path, index=False)
+        return {
+            "attempted_input_count": attempted_input_count,
+            "matched_merged_rows_count": 0,
+            "registered_filing_row_count": 0,
+            "registered_artifact_row_count": 0,
+            "skipped_count": int(sum(skip_reasons.values())),
+            "skip_reasons": skip_reasons,
+            "safe_to_use": bool(safe_to_use),
+            "touched_accession_count": int(len(matched_accessions)),
+            "touched_filename_count": int(len(matched_filenames)),
+            "filings_index_path": str(filings_path),
+            "artifacts_index_path": str(artifacts_path),
+            "elapsed_seconds": round(time.monotonic() - started_at, 3),
+        }
+
+    subset = pd.DataFrame(matched_rows)
+    placements_df, _, _ = _build_filing_placements_from_merged(config, subset)
+    local_placements_df = _filter_local_presence(placements_df)
+    new_filings_df = _dedupe_filings(local_placements_df)
+    new_artifacts_df = _build_artifacts_lookup(local_placements_df)
+
+    if placements_df.empty:
+        safe_to_use = False
+        skip_reasons["empty_placement_rows"] = skip_reasons.get("empty_placement_rows", 0) + 1
+    if local_placements_df.empty:
+        safe_to_use = False
+        skip_reasons["no_local_presence_for_matches"] = skip_reasons.get("no_local_presence_for_matches", 0) + 1
+
+    touched_filenames = {name for name in (_normalize_filename(v) for v in placements_df.get("filename", pd.Series()).tolist()) if name}
+    touched_accessions = {acc for acc in (_normalize_accession(v) for v in placements_df.get("accession_number", pd.Series()).tolist()) if acc}
+
+    existing_filings_df = _load_lookup_or_empty(filings_path, _empty_filings_df)
+    if not existing_filings_df.empty and (touched_filenames or touched_accessions):
+        existing_filings_accessions = existing_filings_df["accession_number"].map(_normalize_accession)
+        existing_filings_filenames = existing_filings_df["filename"].map(_normalize_filename)
+        accession_present = existing_filings_accessions.notna()
+        remove_by_accession = accession_present & existing_filings_accessions.isin(touched_accessions)
+        remove_by_filename = (~accession_present) & existing_filings_filenames.isin(touched_filenames)
+        existing_filings_df = existing_filings_df[~(remove_by_accession | remove_by_filename)].reset_index(drop=True)
+
+    merged_filings_df = pd.concat([existing_filings_df, new_filings_df], ignore_index=True)
+    merged_filings_df = _sort_filings_df(merged_filings_df)
+    merged_filings_df.to_parquet(filings_path, index=False)
+
+    existing_artifacts_df = _load_lookup_or_empty(artifacts_path, _empty_artifacts_df)
+    if not existing_artifacts_df.empty and (touched_filenames or touched_accessions):
+        existing_artifacts_accessions = existing_artifacts_df["accession_number"].map(_normalize_accession)
+        existing_artifacts_filenames = existing_artifacts_df["source_filename"].map(_normalize_filename)
+        remove_artifacts = existing_artifacts_accessions.isin(touched_accessions) | existing_artifacts_filenames.isin(touched_filenames)
+        existing_artifacts_df = existing_artifacts_df[~remove_artifacts].reset_index(drop=True)
+
+    merged_artifacts_df = pd.concat([existing_artifacts_df, new_artifacts_df], ignore_index=True)
+    merged_artifacts_df = _sort_artifacts_df(merged_artifacts_df)
+    merged_artifacts_df.to_parquet(artifacts_path, index=False)
+
+    return {
+        "attempted_input_count": attempted_input_count,
+        "matched_merged_rows_count": int(len(matched_rows)),
+        "registered_filing_row_count": int(len(new_filings_df.index)),
+        "registered_artifact_row_count": int(len(new_artifacts_df.index)),
+        "skipped_count": int(sum(skip_reasons.values())),
+        "skip_reasons": skip_reasons,
+        "safe_to_use": bool(safe_to_use),
+        "touched_accession_count": int(len(touched_accessions)),
+        "touched_filename_count": int(len(touched_filenames)),
+        "filings_index_path": str(filings_path),
+        "artifacts_index_path": str(artifacts_path),
         "elapsed_seconds": round(time.monotonic() - started_at, 3),
     }
 

@@ -22,9 +22,12 @@ from py_sec_edgar.lookup import (
     query_lookup,
     refresh_local_lookup_indexes,
 )
+from py_sec_edgar.monitoring import run_monitor_loop, run_monitor_poll
 from py_sec_edgar.pipelines.backfill import run_backfill
 from py_sec_edgar.pipelines.index_refresh import run_index_refresh
 from py_sec_edgar.pipelines.refdata_refresh import run_refdata_refresh
+from py_sec_edgar.progress import ProgressHeartbeat, progress_enabled, progress_payload_from_result
+from py_sec_edgar.reconciliation import run_reconciliation
 from py_sec_edgar.runtime_output import (
     DEFAULT_ACTIVITY_WINDOW,
     bounded_recent_activity,
@@ -271,8 +274,24 @@ def lookup_refresh(
     summary_json: bool,
 ) -> None:
     config = load_config()
+    progress = ProgressHeartbeat(
+        enabled=progress_enabled(summary_json=summary_json),
+        phase="lookup.refresh",
+    )
     try:
-        result = refresh_local_lookup_indexes(config, include_global_filings=include_global_filings)
+        with progress:
+            result = refresh_local_lookup_indexes(config, include_global_filings=include_global_filings)
+            progress.set_counters(
+                **progress_payload_from_result(
+                    result,
+                    keys=[
+                        "placement_row_count",
+                        "local_placement_row_count",
+                        "filings_row_count",
+                        "artifacts_row_count",
+                    ],
+                )
+            )
     except FileNotFoundError as exc:
         message = str(exc)
         if "Merged index file not found:" in message:
@@ -280,6 +299,8 @@ def lookup_refresh(
         raise click.ClickException(message) from exc
     except ValueError as exc:
         raise click.ClickException(str(exc)) from exc
+    except KeyboardInterrupt as exc:
+        raise click.ClickException("Interrupted by user.") from exc
 
     if summary_json:
         click.echo(json.dumps(result, sort_keys=True))
@@ -409,6 +430,338 @@ def lookup_query(
         return
 
     click.echo(filtered.to_string(index=False))
+
+
+@main.group("monitor")
+def monitor_group() -> None:
+    """Feed-driven monitoring and cache-warming operations."""
+
+
+@monitor_group.command("poll")
+@click.option("--warm/--no-warm", default=True, show_default=True, help="Warm local SEC mirror cache for detected candidates.")
+@click.option("--form-type", "form_types", multiple=True, help="Filter by form type. Repeat for multiple values.")
+@click.option(
+    "--form-family",
+    "form_families",
+    type=click.Choice(sorted(FORM_FAMILY_MAP.keys()), case_sensitive=False),
+    multiple=True,
+    help="Filter by form family. Repeat for multiple values.",
+)
+@click.option("--issuer-cik", "issuer_ciks", multiple=True, help="Filter by issuer CIK. Repeat for multiple values.")
+@click.option("--entity-cik", "entity_ciks", multiple=True, help="Filter by entity CIK. Repeat for multiple values.")
+@click.option("--date-from", default=None, help="Lower filing date bound (inclusive), e.g. 2025-01-01.")
+@click.option("--date-to", default=None, help="Upper filing date bound (inclusive), e.g. 2025-03-31.")
+@click.option(
+    "--execute-extraction/--no-execute-extraction",
+    default=False,
+    show_default=True,
+    help="Run extraction for monitor-warmed filings.",
+)
+@click.option(
+    "--persist-filing-parties/--no-persist-filing-parties",
+    default=False,
+    show_default=True,
+    help="Persist filing-party rows for monitor-warmed supported filings.",
+)
+@click.option(
+    "--refresh-lookup/--no-refresh-lookup",
+    default=True,
+    show_default=True,
+    help="Refresh local lookup artifacts if monitor run changed local visibility.",
+)
+@click.option(
+    "--summary-json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable JSON summary instead of human-readable lines.",
+)
+def monitor_poll(
+    warm: bool,
+    form_types: tuple[str, ...],
+    form_families: tuple[str, ...],
+    issuer_ciks: tuple[str, ...],
+    entity_ciks: tuple[str, ...],
+    date_from: str | None,
+    date_to: str | None,
+    execute_extraction: bool,
+    persist_filing_parties: bool,
+    refresh_lookup: bool,
+    summary_json: bool,
+) -> None:
+    config = load_config()
+    progress = ProgressHeartbeat(
+        enabled=progress_enabled(summary_json=summary_json),
+        phase="monitor.poll",
+    )
+    try:
+        with progress:
+            result = run_monitor_poll(
+                config,
+                warm=warm,
+                form_types=list(form_types) or None,
+                form_families=[value.lower() for value in form_families] or None,
+                issuer_ciks=list(issuer_ciks) or None,
+                entity_ciks=list(entity_ciks) or None,
+                date_from=date_from,
+                date_to=date_to,
+                execute_extraction=execute_extraction,
+                persist_filing_parties=persist_filing_parties,
+                refresh_lookup=refresh_lookup,
+            )
+            progress.set_counters(
+                **progress_payload_from_result(
+                    result,
+                    keys=[
+                        "detected_candidate_count",
+                        "filtered_candidate_count",
+                        "warm_attempted_count",
+                        "warm_succeeded_count",
+                        "warm_failed_count",
+                    ],
+                )
+            )
+    except KeyboardInterrupt as exc:
+        raise click.ClickException("Interrupted by user.") from exc
+
+    if summary_json:
+        click.echo(json.dumps(result, sort_keys=True))
+        return
+
+    summary = render_summary_block(
+        "Monitor poll complete.",
+        {
+            "detected_candidate_count": result.get("detected_candidate_count"),
+            "filtered_candidate_count": result.get("filtered_candidate_count"),
+            "seen_duplicate_count": result.get("seen_duplicate_count"),
+            "warm_attempted_count": result.get("warm_attempted_count"),
+            "warm_succeeded_count": result.get("warm_succeeded_count"),
+            "warm_failed_count": result.get("warm_failed_count"),
+            "skipped_already_local_count": result.get("skipped_already_local_count"),
+            "lookup_refresh_attempted": result.get("lookup_refresh_attempted"),
+            "lookup_refresh_performed": result.get("lookup_refresh_performed"),
+            "lookup_refresh_skipped_reason": result.get("lookup_refresh_skipped_reason"),
+            "local_visibility_changed": result.get("local_visibility_changed"),
+            "seen_state_path": result.get("seen_state_path"),
+            "events_path": result.get("events_path"),
+            "total_elapsed_seconds": result.get("total_elapsed_seconds"),
+        },
+    )
+    click.echo(summary)
+
+
+@monitor_group.command("loop")
+@click.option("--warm/--no-warm", default=True, show_default=True, help="Warm local SEC mirror cache for detected candidates.")
+@click.option("--form-type", "form_types", multiple=True, help="Filter by form type. Repeat for multiple values.")
+@click.option(
+    "--form-family",
+    "form_families",
+    type=click.Choice(sorted(FORM_FAMILY_MAP.keys()), case_sensitive=False),
+    multiple=True,
+    help="Filter by form family. Repeat for multiple values.",
+)
+@click.option("--issuer-cik", "issuer_ciks", multiple=True, help="Filter by issuer CIK. Repeat for multiple values.")
+@click.option("--entity-cik", "entity_ciks", multiple=True, help="Filter by entity CIK. Repeat for multiple values.")
+@click.option("--date-from", default=None, help="Lower filing date bound (inclusive), e.g. 2025-01-01.")
+@click.option("--date-to", default=None, help="Upper filing date bound (inclusive), e.g. 2025-03-31.")
+@click.option(
+    "--execute-extraction/--no-execute-extraction",
+    default=False,
+    show_default=True,
+    help="Run extraction for monitor-warmed filings.",
+)
+@click.option(
+    "--persist-filing-parties/--no-persist-filing-parties",
+    default=False,
+    show_default=True,
+    help="Persist filing-party rows for monitor-warmed supported filings.",
+)
+@click.option(
+    "--refresh-lookup/--no-refresh-lookup",
+    default=True,
+    show_default=True,
+    help="Refresh local lookup artifacts if monitor run changed local visibility.",
+)
+@click.option(
+    "--interval-seconds",
+    type=click.FloatRange(min=0.0),
+    default=30.0,
+    show_default=True,
+    help="Sleep interval between poll iterations.",
+)
+@click.option(
+    "--max-iterations",
+    type=click.IntRange(min=1),
+    default=5,
+    show_default=True,
+    help="Maximum loop iterations before exiting.",
+)
+@click.option(
+    "--summary-json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable JSON summary for the bounded loop run.",
+)
+def monitor_loop(
+    warm: bool,
+    form_types: tuple[str, ...],
+    form_families: tuple[str, ...],
+    issuer_ciks: tuple[str, ...],
+    entity_ciks: tuple[str, ...],
+    date_from: str | None,
+    date_to: str | None,
+    execute_extraction: bool,
+    persist_filing_parties: bool,
+    refresh_lookup: bool,
+    interval_seconds: float,
+    max_iterations: int,
+    summary_json: bool,
+) -> None:
+    config = load_config()
+    result = run_monitor_loop(
+        config,
+        interval_seconds=interval_seconds,
+        max_iterations=max_iterations,
+        warm=warm,
+        form_types=list(form_types) or None,
+        form_families=[value.lower() for value in form_families] or None,
+        issuer_ciks=list(issuer_ciks) or None,
+        entity_ciks=list(entity_ciks) or None,
+        date_from=date_from,
+        date_to=date_to,
+        execute_extraction=execute_extraction,
+        persist_filing_parties=persist_filing_parties,
+        refresh_lookup=refresh_lookup,
+    )
+
+    if summary_json:
+        click.echo(json.dumps(result, sort_keys=True))
+        return
+
+    summary = render_summary_block(
+        "Monitor loop complete.",
+        {
+            "iterations_run": result.get("iterations_run"),
+            "interval_seconds": result.get("interval_seconds"),
+            "total_detected_candidate_count": result.get("total_detected_candidate_count"),
+            "total_filtered_candidate_count": result.get("total_filtered_candidate_count"),
+            "total_warm_attempted_count": result.get("total_warm_attempted_count"),
+            "total_warm_succeeded_count": result.get("total_warm_succeeded_count"),
+            "total_warm_failed_count": result.get("total_warm_failed_count"),
+            "total_elapsed_seconds": result.get("total_elapsed_seconds"),
+        },
+    )
+    click.echo(summary)
+
+
+@main.group("reconcile")
+def reconcile_group() -> None:
+    """Feed-plus-index reconciliation operations."""
+
+
+@reconcile_group.command("run")
+@click.option(
+    "--recent-days",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Recent-day window when --date-from is not provided.",
+)
+@click.option("--date-from", default=None, help="Lower filing date bound (inclusive), e.g. 2025-01-01.")
+@click.option("--date-to", default=None, help="Upper filing date bound (inclusive), e.g. 2025-03-31.")
+@click.option("--form-type", "form_types", multiple=True, help="Filter by form type. Repeat for multiple values.")
+@click.option(
+    "--form-family",
+    "form_families",
+    type=click.Choice(sorted(FORM_FAMILY_MAP.keys()), case_sensitive=False),
+    multiple=True,
+    help="Filter by form family. Repeat for multiple values.",
+)
+@click.option("--issuer-cik", "issuer_ciks", multiple=True, help="Filter by issuer CIK. Repeat for multiple values.")
+@click.option(
+    "--catch-up-warm/--no-catch-up-warm",
+    default=False,
+    show_default=True,
+    help="Warm missing local submissions for catch-up eligible reconciliation rows.",
+)
+@click.option(
+    "--refresh-lookup/--no-refresh-lookup",
+    default=True,
+    show_default=True,
+    help="Refresh/update lookup visibility after successful catch-up warm activity.",
+)
+@click.option(
+    "--summary-json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable JSON summary instead of human-readable lines.",
+)
+def reconcile_run(
+    recent_days: int | None,
+    date_from: str | None,
+    date_to: str | None,
+    form_types: tuple[str, ...],
+    form_families: tuple[str, ...],
+    issuer_ciks: tuple[str, ...],
+    catch_up_warm: bool,
+    refresh_lookup: bool,
+    summary_json: bool,
+) -> None:
+    config = load_config()
+    progress = ProgressHeartbeat(
+        enabled=progress_enabled(summary_json=summary_json),
+        phase="reconcile.run",
+    )
+    try:
+        with progress:
+            result = run_reconciliation(
+                config,
+                recent_days=recent_days,
+                date_from=date_from,
+                date_to=date_to,
+                form_types=list(form_types) or None,
+                form_families=[value.lower() for value in form_families] or None,
+                issuer_ciks=list(issuer_ciks) or None,
+                catch_up_warm=catch_up_warm,
+                refresh_lookup=refresh_lookup,
+            )
+            progress.set_counters(
+                **progress_payload_from_result(
+                    result,
+                    keys=[
+                        "reconciled_row_count",
+                        "catch_up_attempted_count",
+                        "catch_up_succeeded_count",
+                        "catch_up_failed_count",
+                        "catch_up_skipped_count",
+                    ],
+                )
+            )
+    except KeyboardInterrupt as exc:
+        raise click.ClickException("Interrupted by user.") from exc
+
+    if summary_json:
+        click.echo(json.dumps(result, sort_keys=True))
+        return
+
+    summary = render_summary_block(
+        "Reconciliation run complete.",
+        {
+            "merged_index_candidate_count": result.get("merged_index_candidate_count"),
+            "feed_candidate_count": result.get("feed_candidate_count"),
+            "reconciled_row_count": result.get("reconciled_row_count"),
+            "discrepancy_type_counts": result.get("discrepancy_type_counts"),
+            "catch_up_warm_enabled": result.get("catch_up_warm_enabled"),
+            "catch_up_attempted_count": result.get("catch_up_attempted_count"),
+            "catch_up_succeeded_count": result.get("catch_up_succeeded_count"),
+            "catch_up_failed_count": result.get("catch_up_failed_count"),
+            "lookup_update_mode": result.get("lookup_update_mode"),
+            "lookup_refresh_performed": result.get("lookup_refresh_performed"),
+            "lookup_refresh_skipped_reason": result.get("lookup_refresh_skipped_reason"),
+            "discrepancies_path": result.get("discrepancies_path"),
+            "events_path": result.get("events_path"),
+            "total_elapsed_seconds": result.get("total_elapsed_seconds"),
+        },
+    )
+    click.echo(summary)
 
 
 @main.command("backfill")

@@ -55,6 +55,36 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
   - candidate filtering
   - resumable downloads
 
+## Phase 7
+- Add API foundation package (`py_sec_edgar/api/`) with FastAPI app factory.
+- Implement metadata-first local lookup endpoint(s) by accession number.
+- Implement local-first content retrieval routing abstraction:
+  - local cache hit serves directly,
+  - local miss fetches from SEC and persists into canonical local mirror path.
+- Keep API additive only; no CLI regression and no storage layout replacement.
+- Add deterministic local-only API/service tests.
+
+## Phase 8
+- Add monitor subsystem for feed-driven candidate awareness and local cache warming.
+- Add `py-sec-edgar monitor poll` and bounded `py-sec-edgar monitor loop` commands.
+- Persist monitor seen-state and event artifacts under `refdata/normalized/`.
+- Update lookup visibility after monitor run only when local visibility changed, using incremental registration by default with full refresh as safety fallback.
+- Keep monitor tests fully offline via injectable feed/fetch boundaries.
+
+## Phase 9
+- Add portable service runtime entry module for API + monitor worker (`api`, `monitor-once`, `monitor-loop`).
+- Add Dockerfile, compose scaffold, and dockerignore as optional runtime wrapper over existing code paths.
+- Keep host-native CLI workflows unchanged and first-class.
+- Keep SEC data/artifacts out of image layers; persist via mounted storage only.
+- Emit stable JSON startup/runtime summaries from service runtime for operator observability.
+- Keep monitor-loop continuous with signal-aware shutdown, exception-only bounded backoff, and advisory single-instance locking on shared storage.
+
+## Phase 10
+- Add one-shot feed-plus-index reconciliation command and runtime.
+- Persist durable reconciliation discrepancy/event artifacts under normalized root.
+- Support optional catch-up warming into canonical mirror paths.
+- Reuse incremental lookup registration after catch-up warming; full lookup refresh fallback only when incremental is unsafe/incomplete.
+
 ## Acceptance criteria
 
 - A user can refresh SEC reference data from official sources.
@@ -240,3 +270,93 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
 - Added deterministic filings rollup fields (`submission_path_count`, local extracted-file rollups, and max-preserved filing-party counts) with stable representative field selection.
 - Preserved path-granular artifact inventory under `local_lookup_artifacts.parquet`.
 - Added explicit merged-index-wide filings inventory opt-in via `py-sec-edgar lookup refresh --include-global-filings` and query access via `py-sec-edgar lookup query --scope filings --all`.
+
+## Migration notes (API foundation scaffold patch)
+
+- Added new API package scaffold under `py_sec_edgar/api/` with explicit modules:
+  - `app.py` (FastAPI app factory and endpoints),
+  - `models.py` (response schemas),
+  - `service.py` (local-first lookup/content routing abstraction).
+- Added endpoints:
+  - `GET /health`
+  - `GET /filings/{accession_number}`
+  - `GET /filings/{accession_number}/content`
+- Implemented local-first content retrieval contract:
+  - serve local file content when present,
+  - return explicit not-yet-implemented response for SEC fallback on local miss.
+- Preserved existing storage conventions and CLI behavior; patch is additive and API-only.
+
+## Migration notes (API remote fallback + persist patch)
+
+- Implemented real local-miss SEC fallback in API retrieval service with explicit decisions:
+  - `local_hit`
+  - `remote_fetched_and_persisted`
+  - `not_found`
+  - `remote_fetch_failed`
+- Canonicalized API content path behavior to always derive local file path from metadata filename under configured `download_root` (`<download_root>/<filename.lstrip('/')>`), preserving existing SEC mirror layout.
+- Added injectable API fetch wrapper with default `ProxyRequest.GET_FILE` implementation for deterministic offline tests.
+- Updated `GET /filings/{accession_number}` to behave as metadata-first endpoint: returns metadata when resolvable from local lookup or merged index even if local content is currently missing.
+- Updated `GET /filings/{accession_number}/content` to fetch-and-persist on local miss and return actionable `502` detail on remote fetch failures.
+
+## Migration notes (Feed-driven monitor + cache warming patch)
+
+- Added monitor runtime module with injectable feed and warm-fetch boundaries for deterministic offline testing.
+- Added CLI monitor group:
+  - `py-sec-edgar monitor poll`
+  - `py-sec-edgar monitor loop`
+- Added monitor state artifacts under normalized root:
+  - `monitor_seen_accessions.parquet`
+  - `monitor_events.parquet`
+- Monitor warming uses canonical SEC mirror persistence paths and preserves existing storage layout.
+- Lookup refresh after monitor runs is conditional: only performed when local visibility changed; otherwise explicitly skipped and reported.
+
+## Migration notes (Monitor correctness + self-healing hardening patch)
+
+- Fixed monitor event persistence coherence so operational skip actions (including `lookup_refresh_skipped`) are persisted to `monitor_events.parquet` and remain aligned with poll summaries/activity.
+- Added explicit normalization skip handling pipeline: feed normalization now returns rejected records, and poll flow persists `normalization_skipped` events with reasons/details.
+- Hardened seen-state behavior for cache self-healing: seen accessions with missing canonical local files are eligible for re-warm attempts rather than being suppressed as `already_seen`.
+- Preserved existing lookup refresh strategy (full `refresh_local_lookup_indexes` reuse) and existing storage/API/CLI surface boundaries.
+
+## Migration notes (Monitor incremental lookup registration patch)
+
+- Added incremental lookup registration for warmed filings (`register_local_filings_in_lookup`) that updates `local_lookup_filings.parquet` and `local_lookup_artifacts.parquet` without rebuilding broader lookup artifacts.
+- Monitor now defaults to incremental lookup registration after warm-success visibility changes.
+- Full `refresh_local_lookup_indexes` remains as explicit safety fallback only when incremental registration is unsafe/incomplete.
+- `local_lookup_filings_all.parquet` remains full-refresh-only and is not incrementally maintained in monitor flows.
+
+## Migration notes (Feed-plus-index reconciliation hardening patch)
+
+- Added reconciliation runtime and CLI one-shot flow (`py-sec-edgar reconcile run`) for feed/index/local visibility comparison over bounded windows.
+- Added durable reconciliation artifacts:
+  - `reconciliation_discrepancies.parquet`
+  - `reconciliation_events.parquet`
+- Added optional catch-up warming that persists missing submissions to canonical mirror paths and updates lookup visibility via incremental registration first.
+- Preserved fallback behavior: full lookup refresh is used only when incremental registration is unsafe/incomplete and lookup refresh is enabled.
+- Kept storage layout/API/CLI/service-runtime contracts additive and unchanged beyond the new reconciliation command surface.
+
+## Migration notes (Operator readiness bugfix patch)
+
+- Fixed reconciliation date-window filtering crash by normalizing bounds and row-date comparisons to a consistent tz-naive strategy.
+- Fixed feed-derived warm target normalization so SEC `-index.htm` style links resolve to canonical raw submission `.txt` targets when deterministically derivable.
+- Reduced false incremental-lookup unsafe/fallback behavior caused by non-canonical warm targets.
+- Kept API accession semantics unchanged (exact lookup and 404 behavior when accession is absent).
+
+## Migration notes (Portable service runtime scaffold patch)
+
+- Added service runtime entry module with explicit subcommands:
+  - `api`
+  - `monitor-once`
+  - `monitor-loop`
+- Added optional container runtime scaffold:
+  - `Dockerfile`
+  - `compose.yaml`
+  - `.dockerignore`
+- Compose services share one image and mounted persistent host storage; API and monitor worker run as independent services.
+- Preserved host-native workflows and existing business logic paths; compose layer is runtime-only and additive.
+
+## Migration notes (Reconciliation catch-up hardening + operator progress patch)
+
+- Hardened reconciliation catch-up eligibility to prioritize strong canonical raw-submission targets and explicitly skip weak candidates with persisted skip reasons/events.
+- Added shared progress heartbeat utility for operator-facing long calls (`lookup refresh`, `monitor poll`, `reconcile run`, `service_runtime monitor-once`) using stderr-only human output.
+- Preserved machine-mode contract: `--summary-json` stays clean JSON on stdout.
+- Added graceful Ctrl+C handling for those flows: clean interruption message and nonzero exit without traceback.

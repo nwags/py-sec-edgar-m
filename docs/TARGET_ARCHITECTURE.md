@@ -17,6 +17,11 @@ py_sec_edgar/
   filters.py
   downloader.py
   extractor.py
+  api/
+    __init__.py
+    app.py
+    models.py
+    service.py
   refdata/
     __init__.py
     sources.py
@@ -58,6 +63,26 @@ This stage is I/O-bound and must be globally rate-limited.
 If enabled, use a separate CPU-oriented stage for parsing or extracting document sections.
 This can remain serial initially and later move to `ProcessPoolExecutor` if profiling justifies it.
 
+### Stage 6: API local-first serving
+Expose a metadata-first API layer over existing local artifacts:
+- lookup by accession through local lookup/index metadata,
+- serve local submission content first,
+- on local miss, fetch from SEC and persist into the existing cache layout so subsequent requests are local hits.
+
+### Stage 7: Feed-driven monitoring + cache warming
+Run feed-aware polling to detect new candidate filings, warm local cache in canonical mirror paths, and update lookup visibility when local artifacts changed (incremental registration by default, full refresh fallback only when incremental is unsafe/incomplete).
+Monitoring state and event history should remain operationally coherent so reported actions match persisted artifacts.
+
+### Stage 7.5: Feed-plus-index reconciliation
+Provide one-shot reconciliation between feed visibility, merged-index visibility, and local cache presence for bounded windows, with durable discrepancy/event artifacts and optional catch-up warming into canonical mirror paths.
+Canonical warm targets should resolve to raw submission `.txt` paths when deterministically derivable from feed/index context.
+Catch-up should stay operator-safe by default: attempt only strong canonical targets, and persist explicit skip reasons for weak candidates.
+
+### Stage 8: Portable service runtime wrapper
+Provide optional runtime scaffolding for long-running API and monitor worker processes via one shared service image and compose wiring, while preserving host-native execution paths and storage semantics.
+Service runtime should emit machine-readable startup/iteration summaries and use advisory single-instance locking for monitor-loop safety on shared storage.
+Operator-facing long-running commands should provide stderr heartbeat/progress in human mode and clean Ctrl+C interruption handling without traceback.
+
 ## Storage model
 
 ### Raw SEC mirror
@@ -74,6 +99,13 @@ Maintain separate normalized tables under `refdata/normalized/`:
 - `reference_file_manifest.parquet`
 
 `reference_file_manifest.parquet` is canonical and must include source file hashes and provenance metadata.
+
+### API lookup/caching artifacts
+API lookup and serving should reuse existing storage conventions:
+- merged index parquet,
+- lookup parquet (`local_lookup_filings.parquet`, `local_lookup_artifacts.parquet`),
+- raw SEC mirror under `.sec_cache/Archives/...`,
+- extracted artifact directories beside submissions.
 
 ## Concurrency rules
 

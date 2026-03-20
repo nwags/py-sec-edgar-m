@@ -236,3 +236,17 @@ def test_lookup_smoke_local_flow_refresh_then_queries(monkeypatch, tmp_path: Pat
     assert artifacts_json.exit_code == 0
     payload = json.loads(artifacts_json.output.strip())
     assert len(payload) == 2
+
+
+def test_lookup_refresh_keyboard_interrupt_exits_cleanly(monkeypatch, tmp_path: Path) -> None:
+    cfg = load_config(tmp_path)
+    monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: cfg)
+
+    def fake_refresh(config, **kwargs):
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(cli, "refresh_local_lookup_indexes", fake_refresh)
+    result = CliRunner().invoke(cli.main, ["lookup", "refresh"])
+    assert result.exit_code != 0
+    assert "Interrupted by user." in result.output
+    assert "Traceback" not in result.output

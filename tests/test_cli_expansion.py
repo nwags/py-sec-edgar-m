@@ -19,6 +19,7 @@ def test_cli_help_includes_new_commands():
     assert "backfill" in result.output
     assert "filing-parties" in result.output
     assert "lookup" in result.output
+    assert "monitor" in result.output
 
 
 def test_backfill_help_includes_entity_aware_selection_options():

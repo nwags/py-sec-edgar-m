@@ -14,7 +14,10 @@ Current capabilities include:
 - reference-data normalization from SEC source files,
 - EDGAR index refresh + merged parquet materialization,
 - candidate selection and filing downloads,
-- optional serial extraction and filing-party persistence/query.
+- optional serial extraction and filing-party persistence/query,
+- API local-first metadata/content serving with SEC fallback persistence,
+- feed-driven monitor poll/loop for cache warming over existing mirror layout.
+- one-shot feed-plus-index reconciliation with discrepancy persistence and optional catch-up warming.
 
 Design Philosophy
 =================
@@ -99,6 +102,76 @@ Loads candidates from merged index parquet, applies filters, optionally download
 
 Reads persisted `filing_parties.parquet` and applies query filters for operator inspection or JSON pipelines.
 
+`py-sec-edgar monitor poll`
+---------------------------
+
+Runs a one-shot feed poll, filters candidates, warms local cache for new relevant filings, and conditionally refreshes lookup visibility when local artifacts changed.
+
+`py-sec-edgar monitor loop`
+---------------------------
+
+Runs a bounded polling loop (`--interval-seconds`, `--max-iterations`) for operator-driven monitoring without daemonization.
+
+API Local-First Retrieval
+=========================
+
+The repository includes an additive FastAPI surface under `py_sec_edgar/api/` on top of existing CLI ingestion/storage flows.
+
+- `GET /health`
+- `GET /filings/{accession_number}`
+- `GET /filings/{accession_number}/content`
+
+Current API behavior is local-first:
+
+1. use local lookup/index metadata,
+2. serve local cached filing content when present,
+3. on local content miss, fetch filing content from SEC and persist it into the existing cache mirror path under `.sec_cache/Archives/...`,
+4. subsequent requests for that accession are served from local cache.
+
+The API patch does not replace storage layout or CLI ingestion behavior.
+
+Monitoring state artifacts
+==========================
+
+Monitor artifacts are stored under the configured normalized root:
+
+- `monitor_seen_accessions.parquet`
+- `monitor_events.parquet`
+
+Lookup visibility update after monitor warming is conditional:
+
+- when local visibility changed, monitor attempts incremental lookup registration for warmed filings by default,
+- full `lookup refresh` rebuild is used only as a safety fallback when incremental registration is unsafe/incomplete,
+- when local visibility did not change (or refresh is disabled), lookup update is explicitly skipped and reported.
+
+Monitor hardening notes:
+
+- monitor event history persists operational skip actions (including normalization skips and lookup-refresh skips) so persisted history matches reported activity,
+- previously seen accessions with missing local files are eligible for self-healing re-warm attempts instead of being permanently suppressed by seen-state.
+- `local_lookup_filings_all.parquet` remains maintained only by explicit full lookup refresh flows (`lookup refresh --include-global-filings`), not by monitor incremental updates.
+
+Reconciliation artifacts
+========================
+
+Reconciliation artifacts are stored under the configured normalized root:
+
+- `reconciliation_discrepancies.parquet`
+- `reconciliation_events.parquet`
+
+Reconciliation is one-shot and operator-oriented:
+
+- compares feed visibility, merged-index visibility, and local canonical cache presence,
+- records discrepancy classifications durably,
+- optionally performs catch-up warming into canonical mirror paths,
+- updates lookup visibility via incremental registration by default, with full lookup refresh fallback only when incremental registration is unsafe/incomplete.
+- catch-up warming now defaults to conservative, canonical-target eligibility and records explicit skip reasons for weak candidates.
+
+Recent bugfix notes:
+
+- reconciliation date-window filtering now uses consistent tz-naive comparisons (fixes mixed tz-aware/naive crashes),
+- feed-derived monitor/reconciliation warming now canonicalizes SEC `-index.htm` style links to raw submission `.txt` targets when deterministically derivable,
+- API accession semantics are unchanged (exact lookup, 404 when accession is not present in local lookup/index metadata).
+
 Runtime Visibility and Logging
 ==============================
 
@@ -111,6 +184,12 @@ Commands that perform runtime work (`refdata refresh`, `index refresh`, `backfil
 
 `backfill --summary-json` outputs machine-readable JSON on stdout.
 Human-oriented progress/activity output is kept separate so JSON mode stays script-friendly.
+
+Operator-readiness hardening:
+
+- long-running `lookup refresh`, `monitor poll`, `reconcile run`, and `service_runtime monitor-once` now emit periodic human heartbeat/progress on stderr when attached to a TTY,
+- JSON summary modes remain clean stdout JSON (`--summary-json` disables heartbeat output),
+- Ctrl+C interruption now exits cleanly without Python traceback for those operator-facing flows.
 
 Data / Artifact Layout
 ======================
@@ -132,6 +211,48 @@ You can override runtime roots without changing code:
 - `PY_SEC_EDGAR_MERGED_INDEX_PATH`
 - `PY_SEC_EDGAR_NORMALIZED_REFDATA_ROOT`
 
+Portable Runtime (Optional Compose)
+===================================
+
+Host-native workflows remain supported and unchanged. Docker Compose is an optional runtime wrapper.
+
+Service runtime entrypoints:
+
+- `python -m py_sec_edgar.service_runtime api`
+- `python -m py_sec_edgar.service_runtime monitor-once`
+- `python -m py_sec_edgar.service_runtime monitor-loop`
+
+Service runtime JSON observability:
+
+- service startup emits stable JSON with resolved runtime roots/settings,
+- monitor loop emits per-iteration JSON summaries,
+- lock refusal emits stable JSON (`event=monitor_lock_refused`) for easy log assertions.
+
+Monitor loop safety defaults:
+
+- continuous interval polling with signal-aware shutdown,
+- single-instance advisory lock enabled by default at `<project_root>/.sec_runtime/monitor_loop.lock`,
+- lock refusal is based on advisory lock acquisition failure, not stale-file presence.
+
+Compose services (one image, two processes):
+
+- `api` runs the FastAPI service
+- `monitor` runs continuous monitor worker loop
+
+Compose quick-start examples:
+
+.. code-block:: console
+
+    docker compose up api
+    docker compose up monitor
+    docker compose up
+
+Persistence model:
+
+- Image layers remain code/runtime only.
+- SEC artifacts and parquet outputs live in mounted host storage (`PY_SEC_EDGAR_HOST_DATA_ROOT`, mounted to `/workspace`).
+- In-container runtime root is stable (`PY_SEC_EDGAR_PROJECT_ROOT=/workspace`).
+
 Operator Notes
 ==============
 
@@ -152,6 +273,7 @@ Priority 1 — Core Reliability & Usability
 
 - Expand testing coverage (pipeline, regression, fixtures).
 - Faster content lookup (indexing over downloaded and normalized artifacts).
+- Harden API retrieval observability around fallback failures and upstream SEC errors.
 
 Priority 2 — Monitoring / Incremental Ingestion
 ------------------------------------------------

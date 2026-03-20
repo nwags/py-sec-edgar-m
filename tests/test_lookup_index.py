@@ -11,6 +11,7 @@ from py_sec_edgar.lookup import (
     local_lookup_artifacts_path,
     local_lookup_filings_all_path,
     local_lookup_filings_path,
+    register_local_filings_in_lookup,
     refresh_local_lookup_indexes,
 )
 
@@ -218,3 +219,75 @@ def test_refresh_scans_each_extracted_dir_once_for_repeated_rows(monkeypatch, tm
     assert result["placement_row_count"] == 2
     assert result["scanned_extracted_dir_count"] == 1
     assert len(calls) == 1
+
+
+def test_register_local_filings_in_lookup_writes_filings_and_artifacts(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    rows = _seed_duplicate_accession_fixture(config)
+
+    result = register_local_filings_in_lookup(
+        config,
+        warmed_filenames=[rows[0]["Filename"]],
+        warmed_accession_numbers=["0000320193-25-000010"],
+    )
+    assert result["safe_to_use"] is True
+    assert result["matched_merged_rows_count"] == 2
+    assert result["registered_filing_row_count"] == 1
+    assert result["registered_artifact_row_count"] == 6
+
+    filings = pd.read_parquet(local_lookup_filings_path(config))
+    artifacts = pd.read_parquet(local_lookup_artifacts_path(config))
+
+    assert len(filings.index) == 1
+    row = filings.iloc[0]
+    assert row["accession_number"] == "0000320193-25-000010"
+    assert int(row["local_submission_path_count"]) == 2
+    assert int(row["submission_path_count"]) == 2
+    assert int(row["local_artifact_file_count"]) == 4
+    assert int(row["extracted_file_count"]) == 4
+    assert bool(row["has_extracted_artifacts"]) is True
+    assert len(artifacts.index) == 6
+    assert artifacts["artifact_type"].value_counts().to_dict() == {"extracted": 4, "submission": 2}
+
+
+def test_register_local_filings_in_lookup_rerun_is_deterministic_and_deduped(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    rows = _seed_duplicate_accession_fixture(config)
+
+    first = register_local_filings_in_lookup(
+        config,
+        warmed_filenames=[rows[0]["Filename"]],
+        warmed_accession_numbers=["0000320193-25-000010"],
+    )
+    assert first["safe_to_use"] is True
+    first_filings = pd.read_parquet(local_lookup_filings_path(config))
+    first_artifacts = pd.read_parquet(local_lookup_artifacts_path(config))
+
+    second = register_local_filings_in_lookup(
+        config,
+        warmed_filenames=[rows[0]["Filename"]],
+        warmed_accession_numbers=["0000320193-25-000010"],
+    )
+    assert second["safe_to_use"] is True
+    second_filings = pd.read_parquet(local_lookup_filings_path(config))
+    second_artifacts = pd.read_parquet(local_lookup_artifacts_path(config))
+
+    assert len(second_filings.index) == 1
+    assert len(second_artifacts.index) == 6
+    pd.testing.assert_frame_equal(first_filings, second_filings)
+    pd.testing.assert_frame_equal(first_artifacts, second_artifacts)
+
+
+def test_register_local_filings_in_lookup_marks_unsafe_when_unmatched_input(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    _seed_duplicate_accession_fixture(config)
+
+    result = register_local_filings_in_lookup(
+        config,
+        warmed_filenames=["edgar/data/does-not-exist/0000000000-00-000000.txt"],
+        warmed_accession_numbers=["0000000000-00-000000"],
+    )
+    assert result["safe_to_use"] is False
+    assert result["matched_merged_rows_count"] == 0
+    assert result["skipped_count"] >= 1
+    assert "filename_not_found_in_merged_index" in result["skip_reasons"]
