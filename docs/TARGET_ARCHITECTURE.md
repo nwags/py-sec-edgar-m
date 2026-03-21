@@ -81,7 +81,7 @@ Catch-up should stay operator-safe by default: attempt only strong canonical tar
 ### Stage 8: Portable service runtime wrapper
 Provide optional runtime scaffolding for long-running API and monitor worker processes via one shared service image and compose wiring, while preserving host-native execution paths and storage semantics.
 Service runtime should emit machine-readable startup/iteration summaries and use advisory single-instance locking for monitor-loop safety on shared storage.
-Operator-facing long-running commands should provide stderr heartbeat/progress in human mode and clean Ctrl+C interruption handling without traceback.
+Operator-facing long-running commands should provide stderr heartbeat/progress in human mode, support optional compact NDJSON progress telemetry on stderr for machine parsing, and preserve clean Ctrl+C interruption handling without traceback and stable final summary JSON on stdout.
 
 ## Storage model
 

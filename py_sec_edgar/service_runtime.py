@@ -15,7 +15,7 @@ import uvicorn
 from py_sec_edgar.api.app import create_app
 from py_sec_edgar.config import AppConfig, load_config
 from py_sec_edgar.monitoring import run_monitor_poll
-from py_sec_edgar.progress import ProgressHeartbeat, progress_enabled, progress_payload_from_result
+from py_sec_edgar.progress import ProgressHeartbeat, progress_enabled, progress_machine_enabled, progress_payload_from_result
 
 try:  # pragma: no cover - Linux path is exercised in tests
     import fcntl
@@ -150,16 +150,22 @@ def run_api_service(*, settings: dict[str, object] | None = None) -> None:
     uvicorn.run(app, host=str(runtime["api_host"]), port=int(runtime["api_port"]))
 
 
-def run_monitor_once(*, settings: dict[str, object] | None = None) -> dict[str, object]:
+def run_monitor_once(*, settings: dict[str, object] | None = None, progress_json: bool = False) -> dict[str, object]:
     runtime = settings or load_runtime_settings()
     config = load_config()
     _emit_json(_runtime_snapshot("monitor-once", config, runtime))
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
     progress = ProgressHeartbeat(
-        enabled=progress_enabled(summary_json=False),
+        enabled=machine_progress or progress_enabled(summary_json=False),
         phase="service_runtime.monitor_once",
+        machine_json=machine_progress,
     )
     with progress:
-        result = run_monitor_poll(config, **_monitor_kwargs(runtime))
+        result = run_monitor_poll(
+            config,
+            **_monitor_kwargs(runtime),
+            progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
+        )
         progress.set_counters(
             **progress_payload_from_result(
                 result,
@@ -323,7 +329,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("api", help="Run FastAPI service.")
-    sub.add_parser("monitor-once", help="Run one monitor poll and exit.")
+    monitor_once = sub.add_parser("monitor-once", help="Run one monitor poll and exit.")
+    monitor_once.add_argument("--progress-json", action="store_true", help="Emit machine-readable NDJSON progress events to stderr.")
     sub.add_parser("monitor-loop", help="Run continuous monitor loop service.")
     return parser
 
@@ -336,7 +343,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "monitor-once":
         try:
-            run_monitor_once()
+            run_monitor_once(progress_json=bool(getattr(args, "progress_json", False)))
             return 0
         except KeyboardInterrupt:
             print("Interrupted by user.", file=sys.stderr, flush=True)

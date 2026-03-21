@@ -69,6 +69,7 @@ def test_lookup_refresh_help_and_query_help(monkeypatch, tmp_path: Path) -> None
     query_help = runner.invoke(cli.main, ["lookup", "query", "--help"])
     assert refresh_help.exit_code == 0
     assert "--summary-json" in refresh_help.output
+    assert "--progress-json" in refresh_help.output
     assert "--include-global-filings" in refresh_help.output
     assert query_help.exit_code == 0
     assert "--scope" in query_help.output
@@ -250,3 +251,16 @@ def test_lookup_refresh_keyboard_interrupt_exits_cleanly(monkeypatch, tmp_path: 
     assert result.exit_code != 0
     assert "Interrupted by user." in result.output
     assert "Traceback" not in result.output
+
+
+def test_lookup_refresh_summary_json_with_progress_json_keeps_stdout_clean(monkeypatch, tmp_path: Path) -> None:
+    cfg = load_config(tmp_path)
+    _seed_lookup_inputs(cfg, with_filing_parties=True)
+    monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: cfg)
+
+    result = CliRunner().invoke(cli.main, ["lookup", "refresh", "--summary-json", "--progress-json"])
+    assert result.exit_code == 0
+
+    payload = json.loads(result.stdout.strip())
+    assert payload["filings_row_count"] == 1
+

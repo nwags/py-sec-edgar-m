@@ -302,18 +302,61 @@ def test_advisory_lock_context_manager_uses_flock_and_releases(monkeypatch, tmp_
 def test_main_dispatches_subcommands(monkeypatch):
     calls = []
     monkeypatch.setattr(runtime, "run_api_service", lambda: calls.append("api"))
-    monkeypatch.setattr(runtime, "run_monitor_once", lambda: calls.append("once"))
+    monkeypatch.setattr(runtime, "run_monitor_once", lambda **kwargs: calls.append(("once", kwargs.get("progress_json", False))))
     monkeypatch.setattr(runtime, "run_monitor_loop_service", lambda: calls.append("loop") or {"status": "completed"})
 
     assert runtime.main(["api"]) == 0
     assert runtime.main(["monitor-once"]) == 0
     assert runtime.main(["monitor-loop"]) == 0
-    assert calls == ["api", "once", "loop"]
+    assert calls == ["api", ("once", False), "loop"]
 
 
 def test_main_monitor_once_keyboard_interrupt_returns_nonzero(monkeypatch, capsys):
-    monkeypatch.setattr(runtime, "run_monitor_once", lambda: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(runtime, "run_monitor_once", lambda **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()))
     exit_code = runtime.main(["monitor-once"])
     captured = capsys.readouterr()
     assert exit_code == 130
     assert "Interrupted by user." in captured.err
+
+
+def test_run_monitor_once_progress_json_emits_stderr_progress(monkeypatch, tmp_path, capsys):
+    config = AppConfig.from_project_root(tmp_path)
+
+    monkeypatch.setattr(runtime, "load_config", lambda: config)
+
+    def fake_poll(config_arg, **kwargs):
+        return {
+            "detected_candidate_count": 3,
+            "filtered_candidate_count": 1,
+            "warm_attempted_count": 1,
+            "warm_succeeded_count": 1,
+            "warm_failed_count": 0,
+            "lookup_refresh_performed": True,
+            "lookup_refresh_skipped_reason": None,
+            "total_elapsed_seconds": 0.25,
+        }
+
+    monkeypatch.setattr(runtime, "run_monitor_poll", fake_poll)
+    out = runtime.run_monitor_once(settings=_runtime_settings(), progress_json=True)
+    captured = capsys.readouterr()
+
+    assert out["warm_succeeded_count"] == 1
+    stdout_lines = [line for line in captured.out.splitlines() if line.strip()]
+    assert stdout_lines
+    assert '"event": "service_startup"' in stdout_lines[0]
+    assert any('"event": "monitor_run_summary"' in line for line in stdout_lines)
+
+    stderr_lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert stderr_lines
+    assert all('"event": "progress"' in line for line in stderr_lines)
+
+
+def test_main_monitor_once_progress_json_passes_flag(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(runtime, "run_monitor_once", lambda **kwargs: calls.append(kwargs) or {})
+    exit_code = runtime.main(["monitor-once", "--progress-json"])
+
+    assert exit_code == 0
+    assert calls
+    assert calls[0]["progress_json"] is True

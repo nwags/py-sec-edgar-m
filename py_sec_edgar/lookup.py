@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 import pandas as pd
 
@@ -361,28 +361,78 @@ def _filter_local_presence(placements_df: pd.DataFrame) -> pd.DataFrame:
     return placements_df[mask].reset_index(drop=True)
 
 
+def _emit_lookup_progress(
+    callback: Callable[[dict[str, object]], None] | None,
+    *,
+    phase: str,
+    counters: dict[str, object],
+    detail: str | None = None,
+) -> None:
+    if callback is None:
+        return
+    payload: dict[str, object] = {
+        "phase": str(phase),
+        "counters": {str(k): v for k, v in counters.items()},
+    }
+    if detail:
+        payload["detail"] = str(detail)
+    callback(payload)
+
+
 def refresh_local_lookup_indexes(
     config: AppConfig,
     *,
     include_global_filings: bool = False,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     started_at = time.monotonic()
     config.ensure_runtime_dirs()
 
-    placements_df, filing_parties_available, scanned_extracted_dir_count = _build_filing_placements(config)
+    progress_counters: dict[str, object] = {
+        "placement_row_count": 0,
+        "local_placement_row_count": 0,
+        "scanned_extracted_dir_count": 0,
+        "deduped_local_filing_row_count": 0,
+        "filings_row_count": 0,
+        "artifacts_row_count": 0,
+    }
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.start", counters=progress_counters, detail="started")
+
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.load_merged_index", counters=progress_counters)
+    merged = _load_merged_index_df(config)
+
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.scan_extracted_dirs", counters=progress_counters)
+    placements_df, filing_parties_available, scanned_extracted_dir_count = _build_filing_placements_from_merged(config, merged)
+    progress_counters["placement_row_count"] = int(len(placements_df.index))
+    progress_counters["scanned_extracted_dir_count"] = int(scanned_extracted_dir_count)
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.build_placements", counters=progress_counters)
+
     local_placements_df = _filter_local_presence(placements_df)
+    progress_counters["local_placement_row_count"] = int(len(local_placements_df.index))
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.filter_local_presence", counters=progress_counters)
+
     local_filings_df = _dedupe_filings(local_placements_df)
+    progress_counters["deduped_local_filing_row_count"] = int(len(local_filings_df.index))
+    progress_counters["filings_row_count"] = int(len(local_filings_df.index))
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.dedupe_filings", counters=progress_counters)
+
     artifacts_df = _build_artifacts_lookup(local_placements_df)
+    progress_counters["artifacts_row_count"] = int(len(artifacts_df.index))
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.build_artifacts", counters=progress_counters)
+
     global_filings_df = _dedupe_filings(placements_df) if include_global_filings else None
 
     filings_path = local_lookup_filings_path(config)
     artifacts_path = local_lookup_artifacts_path(config)
     filings_all_path = local_lookup_filings_all_path(config)
 
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.write_outputs", counters=progress_counters)
     local_filings_df.to_parquet(filings_path, index=False)
     artifacts_df.to_parquet(artifacts_path, index=False)
     if global_filings_df is not None:
         global_filings_df.to_parquet(filings_all_path, index=False)
+
+    _emit_lookup_progress(progress_callback, phase="lookup.refresh.complete", counters=progress_counters, detail="completed")
 
     return {
         "filings_index_path": str(filings_path),

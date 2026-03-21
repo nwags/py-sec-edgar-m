@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 import re
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 from urllib.parse import urljoin
 
 import feedparser
@@ -205,6 +205,24 @@ def parse_atom_feed_candidates_detailed(feed_text: str, *, source_id: str) -> Fe
     return FeedNormalizationResult(candidates=out, rejected=rejected)
 
 
+def _emit_monitor_progress(
+    callback: Callable[[dict[str, object]], None] | None,
+    *,
+    phase: str,
+    counters: dict[str, object],
+    detail: str | None = None,
+) -> None:
+    if callback is None:
+        return
+    payload: dict[str, object] = {
+        "phase": str(phase),
+        "counters": {str(k): v for k, v in counters.items()},
+    }
+    if detail:
+        payload["detail"] = str(detail)
+    callback(payload)
+
+
 def run_monitor_poll(
     config: AppConfig,
     *,
@@ -220,10 +238,23 @@ def run_monitor_poll(
     execute_extraction: bool = False,
     persist_filing_parties: bool = False,
     refresh_lookup: bool = True,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     started_at = time.monotonic()
     now = _now_utc_iso()
     config.ensure_runtime_dirs()
+
+    counters: dict[str, object] = {
+        "detected_candidate_count": 0,
+        "filtered_candidate_count": 0,
+        "seen_duplicate_count": 0,
+        "skipped_already_local_count": 0,
+        "warm_attempted_count": 0,
+        "warm_succeeded_count": 0,
+        "warm_failed_count": 0,
+        "normalization_skipped_count": 0,
+    }
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.start", counters=counters, detail="started")
 
     seen_path = monitor_seen_accessions_path(config)
     events_out_path = monitor_events_path(config)
@@ -233,6 +264,7 @@ def run_monitor_poll(
     source = feed_client or SecCurrentAtomFeedClient(feed_url=monitor_feed_url(config))
     fetcher = warm_fetcher or ProxyRequestWarmFetcher()
 
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.fetch_feed", counters=counters)
     fetched = source.fetch_candidates(config)
     if isinstance(fetched, FeedNormalizationResult):
         detected = fetched.candidates
@@ -240,6 +272,10 @@ def run_monitor_poll(
     else:
         detected = list(fetched)
         rejected = []
+
+    counters["detected_candidate_count"] = int(len(detected))
+    counters["normalization_skipped_count"] = int(len(rejected))
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.normalize_feed", counters=counters)
 
     events: list[dict[str, object]] = []
     for rejected_item in rejected:
@@ -271,6 +307,8 @@ def run_monitor_poll(
         date_from=date_from,
         date_to=date_to,
     )
+    counters["filtered_candidate_count"] = int(len(filtered))
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.filter_candidates", counters=counters)
 
     seen_updates: dict[str, dict[str, object]] = {}
     warmed_success_candidates: list[MonitorCandidate] = []
@@ -282,7 +320,8 @@ def run_monitor_poll(
     seen_duplicate_count = 0
     local_visibility_changed = False
 
-    for candidate in filtered:
+    total_candidates = len(filtered)
+    for idx, candidate in enumerate(filtered, start=1):
         accession = candidate.accession_number
         canonical_path = _canonical_local_submission_path(config, candidate.filename)
         local_exists_before = bool(canonical_path is not None and canonical_path.exists())
@@ -316,12 +355,8 @@ def run_monitor_poll(
                 local_submission_present=True,
                 warmed_by_monitor=bool(seen_map.get(accession, {}).get("warmed_by_monitor", False)),
             )
-            continue
-
-        if is_seen:
+        elif is_seen and not warm:
             seen_duplicate_count += 1
-
-        if not warm:
             events.append(
                 {
                     **event_base,
@@ -337,23 +372,12 @@ def run_monitor_poll(
                 local_submission_present=False,
                 warmed_by_monitor=False,
             )
-            continue
-
-        warm_attempted_count += 1
-        events.append(
-            {
-                **event_base,
-                "action": "warm_attempted",
-                "reason": "seen_missing_local" if is_seen else "new_candidate",
-            }
-        )
-        if canonical_path is None or not candidate.url:
-            warm_failed_count += 1
+        elif not warm:
             events.append(
                 {
                     **event_base,
-                    "action": "warm_failed",
-                    "reason": "missing_url_or_filename",
+                    "action": "seen",
+                    "reason": "warm_disabled",
                 }
             )
             seen_updates[accession] = _build_seen_row(
@@ -362,51 +386,86 @@ def run_monitor_poll(
                 first_seen_at=now,
                 last_seen_at=now,
                 local_submission_present=False,
-                warmed_by_monitor=bool(seen_map.get(accession, {}).get("warmed_by_monitor", False)),
-            )
-            continue
-
-        fetch_result = fetcher.fetch(config, candidate.url, canonical_path)
-        local_exists_after = bool(canonical_path.exists())
-        if fetch_result.ok and local_exists_after:
-            warm_succeeded_count += 1
-            local_visibility_changed = True
-            warmed_success_candidates.append(candidate)
-            events.append(
-                {
-                    **event_base,
-                    "action": "warm_succeeded",
-                    "reason": "downloaded",
-                }
-            )
-            seen_updates[accession] = _build_seen_row(
-                previous=seen_map.get(accession),
-                candidate=candidate,
-                first_seen_at=now,
-                last_seen_at=now,
-                local_submission_present=True,
-                warmed_by_monitor=True,
+                warmed_by_monitor=False,
             )
         else:
-            warm_failed_count += 1
+            if is_seen:
+                seen_duplicate_count += 1
+            warm_attempted_count += 1
             events.append(
                 {
                     **event_base,
-                    "action": "warm_failed",
-                    "reason": fetch_result.reason or "warm_failed",
-                    "status_code": fetch_result.status_code,
-                    "error": fetch_result.error,
-                    "error_class": fetch_result.error_class,
+                    "action": "warm_attempted",
+                    "reason": "seen_missing_local" if is_seen else "new_candidate",
                 }
             )
-            seen_updates[accession] = _build_seen_row(
-                previous=seen_map.get(accession),
-                candidate=candidate,
-                first_seen_at=now,
-                last_seen_at=now,
-                local_submission_present=False,
-                warmed_by_monitor=bool(seen_map.get(accession, {}).get("warmed_by_monitor", False)),
-            )
+            if canonical_path is None or not candidate.url:
+                warm_failed_count += 1
+                events.append(
+                    {
+                        **event_base,
+                        "action": "warm_failed",
+                        "reason": "missing_url_or_filename",
+                    }
+                )
+                seen_updates[accession] = _build_seen_row(
+                    previous=seen_map.get(accession),
+                    candidate=candidate,
+                    first_seen_at=now,
+                    last_seen_at=now,
+                    local_submission_present=False,
+                    warmed_by_monitor=bool(seen_map.get(accession, {}).get("warmed_by_monitor", False)),
+                )
+            else:
+                fetch_result = fetcher.fetch(config, candidate.url, canonical_path)
+                local_exists_after = bool(canonical_path.exists())
+                if fetch_result.ok and local_exists_after:
+                    warm_succeeded_count += 1
+                    local_visibility_changed = True
+                    warmed_success_candidates.append(candidate)
+                    events.append(
+                        {
+                            **event_base,
+                            "action": "warm_succeeded",
+                            "reason": "downloaded",
+                        }
+                    )
+                    seen_updates[accession] = _build_seen_row(
+                        previous=seen_map.get(accession),
+                        candidate=candidate,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        local_submission_present=True,
+                        warmed_by_monitor=True,
+                    )
+                else:
+                    warm_failed_count += 1
+                    events.append(
+                        {
+                            **event_base,
+                            "action": "warm_failed",
+                            "reason": fetch_result.reason or "warm_failed",
+                            "status_code": fetch_result.status_code,
+                            "error": fetch_result.error,
+                            "error_class": fetch_result.error_class,
+                        }
+                    )
+                    seen_updates[accession] = _build_seen_row(
+                        previous=seen_map.get(accession),
+                        candidate=candidate,
+                        first_seen_at=now,
+                        last_seen_at=now,
+                        local_submission_present=False,
+                        warmed_by_monitor=bool(seen_map.get(accession, {}).get("warmed_by_monitor", False)),
+                    )
+
+        counters["seen_duplicate_count"] = int(seen_duplicate_count)
+        counters["skipped_already_local_count"] = int(skipped_already_local_count)
+        counters["warm_attempted_count"] = int(warm_attempted_count)
+        counters["warm_succeeded_count"] = int(warm_succeeded_count)
+        counters["warm_failed_count"] = int(warm_failed_count)
+        if idx == 1 or idx == total_candidates or idx % 100 == 0:
+            _emit_monitor_progress(progress_callback, phase="monitor.poll.process_candidates", counters=counters)
 
     extraction_attempted_count = 0
     extraction_succeeded_count = 0
@@ -440,6 +499,9 @@ def run_monitor_poll(
     lookup_incremental_result: dict[str, object] | None = None
     lookup_full_refresh_fallback_performed = False
     lookup_full_refresh_fallback_skipped_reason: str | None = None
+
+    counters["lookup_refresh_attempted"] = bool(lookup_refresh_attempted)
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.lookup_update", counters=counters, detail="lookup_update_started")
 
     if not refresh_lookup:
         lookup_refresh_skipped_reason = "refresh_lookup_disabled"
@@ -608,10 +670,17 @@ def run_monitor_poll(
                 }
             )
 
+    counters["lookup_update_mode"] = lookup_update_mode
+    counters["lookup_refresh_performed"] = bool(lookup_refresh_performed)
+    counters["lookup_full_refresh_fallback_performed"] = bool(lookup_full_refresh_fallback_performed)
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.lookup_update", counters=counters, detail="lookup_update_completed")
+
     merged_seen_df = _merge_seen_updates(seen_df, seen_updates.values())
     merged_seen_df.to_parquet(seen_path, index=False)
 
     persisted_events = _append_events(events_out_path, events)
+
+    _emit_monitor_progress(progress_callback, phase="monitor.poll.complete", counters=counters, detail="completed")
 
     return {
         "detected_candidate_count": int(len(detected)),

@@ -360,3 +360,12 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
 - Added shared progress heartbeat utility for operator-facing long calls (`lookup refresh`, `monitor poll`, `reconcile run`, `service_runtime monitor-once`) using stderr-only human output.
 - Preserved machine-mode contract: `--summary-json` stays clean JSON on stdout.
 - Added graceful Ctrl+C handling for those flows: clean interruption message and nonzero exit without traceback.
+
+## Migration notes (Machine-readable operator progress telemetry patch)
+
+- Added additive `--progress-json` option to `py-sec-edgar lookup refresh`, `py-sec-edgar monitor poll`, `py-sec-edgar reconcile run`, and `python -m py_sec_edgar.service_runtime monitor-once`.
+- Machine progress now emits compact NDJSON events on stderr with stable required fields: `event`, `phase`, `elapsed_seconds`, `counters`.
+- Optional fields `detail`, `window_date`, `window_index`, and `window_total` are emitted only when meaningful.
+- Reconciliation now emits intermediate stage progress (start, merged/feed filtering, row processing, lookup-update stage, end) with catch-up counters and bounded-window hints when available.
+- Preserved output contract: progress remains stderr-only, final `--summary-json` output remains stdout-only.
+- No API/storage/schema layout changes.

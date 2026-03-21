@@ -26,7 +26,7 @@ from py_sec_edgar.monitoring import run_monitor_loop, run_monitor_poll
 from py_sec_edgar.pipelines.backfill import run_backfill
 from py_sec_edgar.pipelines.index_refresh import run_index_refresh
 from py_sec_edgar.pipelines.refdata_refresh import run_refdata_refresh
-from py_sec_edgar.progress import ProgressHeartbeat, progress_enabled, progress_payload_from_result
+from py_sec_edgar.progress import ProgressHeartbeat, progress_enabled, progress_machine_enabled, progress_payload_from_result
 from py_sec_edgar.reconciliation import run_reconciliation
 from py_sec_edgar.runtime_output import (
     DEFAULT_ACTIVITY_WINDOW,
@@ -269,18 +269,33 @@ def lookup_group() -> None:
     default=False,
     help="Emit machine-readable JSON summary instead of human-readable lines.",
 )
+@click.option(
+    "--progress-json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable NDJSON progress events to stderr.",
+)
 def lookup_refresh(
     include_global_filings: bool,
     summary_json: bool,
+    progress_json: bool,
 ) -> None:
     config = load_config()
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
     progress = ProgressHeartbeat(
-        enabled=progress_enabled(summary_json=summary_json),
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="lookup.refresh",
+        machine_json=machine_progress,
     )
     try:
         with progress:
-            result = refresh_local_lookup_indexes(config, include_global_filings=include_global_filings)
+            if machine_progress:
+                progress.emit_event(detail="lookup_refresh_started")
+            result = refresh_local_lookup_indexes(
+                config,
+                include_global_filings=include_global_filings,
+                progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
+            )
             progress.set_counters(
                 **progress_payload_from_result(
                     result,
@@ -292,6 +307,8 @@ def lookup_refresh(
                     ],
                 )
             )
+            if machine_progress:
+                progress.emit_event(detail="lookup_refresh_completed")
     except FileNotFoundError as exc:
         message = str(exc)
         if "Merged index file not found:" in message:
@@ -475,6 +492,12 @@ def monitor_group() -> None:
     default=False,
     help="Emit machine-readable JSON summary instead of human-readable lines.",
 )
+@click.option(
+    "--progress-json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable NDJSON progress events to stderr.",
+)
 def monitor_poll(
     warm: bool,
     form_types: tuple[str, ...],
@@ -487,14 +510,19 @@ def monitor_poll(
     persist_filing_parties: bool,
     refresh_lookup: bool,
     summary_json: bool,
+    progress_json: bool,
 ) -> None:
     config = load_config()
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
     progress = ProgressHeartbeat(
-        enabled=progress_enabled(summary_json=summary_json),
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="monitor.poll",
+        machine_json=machine_progress,
     )
     try:
         with progress:
+            if machine_progress:
+                progress.emit_event(detail="monitor_poll_started")
             result = run_monitor_poll(
                 config,
                 warm=warm,
@@ -507,6 +535,7 @@ def monitor_poll(
                 execute_extraction=execute_extraction,
                 persist_filing_parties=persist_filing_parties,
                 refresh_lookup=refresh_lookup,
+                progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
             )
             progress.set_counters(
                 **progress_payload_from_result(
@@ -520,6 +549,8 @@ def monitor_poll(
                     ],
                 )
             )
+            if machine_progress:
+                progress.emit_event(detail="monitor_poll_completed")
     except KeyboardInterrupt as exc:
         raise click.ClickException("Interrupted by user.") from exc
 
@@ -694,6 +725,12 @@ def reconcile_group() -> None:
     default=False,
     help="Emit machine-readable JSON summary instead of human-readable lines.",
 )
+@click.option(
+    "--progress-json",
+    is_flag=True,
+    default=False,
+    help="Emit machine-readable NDJSON progress events to stderr.",
+)
 def reconcile_run(
     recent_days: int | None,
     date_from: str | None,
@@ -704,14 +741,19 @@ def reconcile_run(
     catch_up_warm: bool,
     refresh_lookup: bool,
     summary_json: bool,
+    progress_json: bool,
 ) -> None:
     config = load_config()
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
     progress = ProgressHeartbeat(
-        enabled=progress_enabled(summary_json=summary_json),
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="reconcile.run",
+        machine_json=machine_progress,
     )
     try:
         with progress:
+            if machine_progress:
+                progress.emit_event(detail="reconcile_started")
             result = run_reconciliation(
                 config,
                 recent_days=recent_days,
@@ -722,6 +764,7 @@ def reconcile_run(
                 issuer_ciks=list(issuer_ciks) or None,
                 catch_up_warm=catch_up_warm,
                 refresh_lookup=refresh_lookup,
+                progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
             )
             progress.set_counters(
                 **progress_payload_from_result(
@@ -735,6 +778,8 @@ def reconcile_run(
                     ],
                 )
             )
+            if machine_progress:
+                progress.emit_event(detail="reconcile_completed")
     except KeyboardInterrupt as exc:
         raise click.ClickException("Interrupted by user.") from exc
 

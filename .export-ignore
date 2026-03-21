@@ -101,3 +101,5 @@ py_sec_edgar/start_celery.sh
 database.py
 docs/_static/
 snapshot_v*
+.sec_cache/
+.pytest_cache/

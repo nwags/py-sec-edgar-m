@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 import time
+from typing import Callable
 from urllib.parse import urljoin
 
 import pandas as pd
@@ -52,6 +53,66 @@ def reconciliation_events_path(config: AppConfig) -> Path:
     return config.normalized_refdata_root / "reconciliation_events.parquet"
 
 
+def _emit_progress(
+    callback: Callable[[dict[str, object]], None] | None,
+    *,
+    phase: str,
+    counters: dict[str, object],
+    detail: str | None = None,
+    window_date: str | None = None,
+    window_index: int | None = None,
+    window_total: int | None = None,
+) -> None:
+    if callback is None:
+        return
+    payload: dict[str, object] = {
+        "phase": str(phase),
+        "counters": {str(k): v for k, v in counters.items()},
+    }
+    if detail:
+        payload["detail"] = str(detail)
+    if window_date:
+        payload["window_date"] = str(window_date)
+    if window_index is not None:
+        payload["window_index"] = int(window_index)
+    if window_total is not None:
+        payload["window_total"] = int(window_total)
+    callback(payload)
+
+
+def _resolved_window_meta(
+    *,
+    recent_days: int | None,
+    date_from: str | None,
+    date_to: str | None,
+) -> tuple[pd.Timestamp | None, pd.Timestamp | None, int | None]:
+    min_date, max_date = _resolved_date_bounds(recent_days, date_from, date_to)
+    if min_date is None or max_date is None:
+        return min_date, max_date, None
+    total = int((max_date.normalize() - min_date.normalize()).days) + 1
+    return min_date, max_date, (total if total > 0 else None)
+
+
+def _window_index_for_date(
+    filing_date: str | None,
+    *,
+    min_date: pd.Timestamp | None,
+    window_total: int | None,
+) -> tuple[str | None, int | None]:
+    if filing_date is None:
+        return None, None
+    ts = _to_naive_timestamp(filing_date)
+    if ts is None:
+        return None, None
+    day = ts.strftime("%Y-%m-%d")
+    if min_date is None or window_total is None:
+        return day, None
+    idx = int((ts.normalize() - min_date.normalize()).days) + 1
+    if idx < 1 or idx > window_total:
+        return day, None
+    return day, idx
+
+
 def run_reconciliation(
     config: AppConfig,
     *,
@@ -65,10 +126,33 @@ def run_reconciliation(
     issuer_ciks: list[str] | None = None,
     catch_up_warm: bool = False,
     refresh_lookup: bool = True,
+    progress_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     started_at = time.monotonic()
     run_time = _now_utc_iso()
     config.ensure_runtime_dirs()
+
+    window_min_date, _window_max_date, window_total = _resolved_window_meta(
+        recent_days=recent_days,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    progress_counters: dict[str, object] = {
+        "merged_index_candidate_count": 0,
+        "feed_candidate_count": 0,
+        "reconciled_row_count": 0,
+        "catch_up_attempted_count": 0,
+        "catch_up_succeeded_count": 0,
+        "catch_up_failed_count": 0,
+        "catch_up_skipped_count": 0,
+    }
+    _emit_progress(
+        progress_callback,
+        phase="reconcile.run.start",
+        counters=progress_counters,
+        detail="reconciliation_started",
+        window_total=window_total,
+    )
 
     merged_df = _load_merged_index_df(config)
     filtered_merged = _filter_merged_rows(
@@ -79,6 +163,14 @@ def run_reconciliation(
         form_types=form_types,
         form_families=form_families,
         issuer_ciks=issuer_ciks,
+    )
+    progress_counters["merged_index_candidate_count"] = int(len(filtered_merged.index))
+    _emit_progress(
+        progress_callback,
+        phase="reconcile.run.filtered_merged",
+        counters=progress_counters,
+        detail="merged_index_filtered",
+        window_total=window_total,
     )
 
     source = feed_client or SecCurrentAtomFeedClient(feed_url=monitor_feed_url(config))
@@ -95,6 +187,14 @@ def run_reconciliation(
         form_types=form_types,
         form_families=form_families,
         issuer_ciks=issuer_ciks,
+    )
+    progress_counters["feed_candidate_count"] = int(len(filtered_feed))
+    _emit_progress(
+        progress_callback,
+        phase="reconcile.run.filtered_feed",
+        counters=progress_counters,
+        detail="feed_filtered",
+        window_total=window_total,
     )
 
     merged_items = _build_items_from_merged(filtered_merged)
@@ -116,7 +216,7 @@ def run_reconciliation(
     warmed_success_filenames: list[str] = []
     warmed_success_accessions: list[str] = []
 
-    for key in keys:
+    for idx, key in enumerate(keys, start=1):
         merged_item = merged_map.get(key)
         feed_item = feed_map.get(key)
         combined = _merge_item(merged_item, feed_item)
@@ -261,6 +361,28 @@ def run_reconciliation(
             }
         )
 
+        progress_counters["reconciled_row_count"] = int(len(rows))
+        progress_counters["catch_up_attempted_count"] = int(catch_up_attempted_count)
+        progress_counters["catch_up_succeeded_count"] = int(catch_up_succeeded_count)
+        progress_counters["catch_up_failed_count"] = int(catch_up_failed_count)
+        progress_counters["catch_up_skipped_count"] = int(catch_up_skipped_count)
+
+        if idx == 1 or idx == len(keys) or idx % 250 == 0:
+            current_window_date, current_window_index = _window_index_for_date(
+                combined.filing_date,
+                min_date=window_min_date,
+                window_total=window_total,
+            )
+            _emit_progress(
+                progress_callback,
+                phase="reconcile.run.rows",
+                counters=progress_counters,
+                detail="rows_processed",
+                window_date=current_window_date,
+                window_index=current_window_index,
+                window_total=window_total,
+            )
+
     lookup_refresh_attempted = bool(refresh_lookup)
     lookup_refresh_performed = False
     lookup_refresh_skipped_reason: str | None = None
@@ -269,6 +391,14 @@ def run_reconciliation(
     lookup_incremental_result: dict[str, object] | None = None
     lookup_full_refresh_fallback_performed = False
     lookup_full_refresh_fallback_skipped_reason: str | None = None
+
+    _emit_progress(
+        progress_callback,
+        phase="reconcile.run.lookup_update",
+        counters=progress_counters,
+        detail="lookup_update_started",
+        window_total=window_total,
+    )
 
     if catch_up_succeeded_count <= 0:
         lookup_refresh_skipped_reason = "no_catch_up_visibility_change"
@@ -405,6 +535,14 @@ def run_reconciliation(
                 }
             )
 
+    _emit_progress(
+        progress_callback,
+        phase="reconcile.run.lookup_update",
+        counters=progress_counters,
+        detail="lookup_update_completed",
+        window_total=window_total,
+    )
+
     discrepancy_path = reconciliation_discrepancies_path(config)
     events_path = reconciliation_events_path(config)
 
@@ -413,6 +551,19 @@ def run_reconciliation(
 
     discrepancy_counts = pd.Series([row["discrepancy_type"] for row in rows], dtype="object").value_counts(dropna=False).to_dict()
     discrepancy_counts = {str(k): int(v) for k, v in discrepancy_counts.items()}
+
+    progress_counters["reconciled_row_count"] = int(len(rows))
+    progress_counters["catch_up_attempted_count"] = int(catch_up_attempted_count)
+    progress_counters["catch_up_succeeded_count"] = int(catch_up_succeeded_count)
+    progress_counters["catch_up_failed_count"] = int(catch_up_failed_count)
+    progress_counters["catch_up_skipped_count"] = int(catch_up_skipped_count)
+    _emit_progress(
+        progress_callback,
+        phase="reconcile.run.complete",
+        counters=progress_counters,
+        detail="reconciliation_completed",
+        window_total=window_total,
+    )
 
     return {
         "run_time": run_time,

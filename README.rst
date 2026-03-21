@@ -187,8 +187,10 @@ Human-oriented progress/activity output is kept separate so JSON mode stays scri
 
 Operator-readiness hardening:
 
-- long-running `lookup refresh`, `monitor poll`, `reconcile run`, and `service_runtime monitor-once` now emit periodic human heartbeat/progress on stderr when attached to a TTY,
-- JSON summary modes remain clean stdout JSON (`--summary-json` disables heartbeat output),
+- long-running `lookup refresh`, `monitor poll`, `reconcile run`, and `service_runtime monitor-once` support optional `--progress-json` for compact NDJSON progress events on stderr,
+- each machine progress event has a stable compact schema: `event`, `phase`, `elapsed_seconds`, `counters` (with optional `detail`, `window_date`, `window_index`, `window_total` only when meaningful),
+- without `--progress-json`, human heartbeat/progress behavior remains unchanged in TTY mode,
+- final `--summary-json` output remains clean JSON on stdout,
 - Ctrl+C interruption now exits cleanly without Python traceback for those operator-facing flows.
 
 Data / Artifact Layout

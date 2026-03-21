@@ -467,3 +467,66 @@ def test_reconciliation_operator_smoke_second_run_reconciles_local_presence(monk
     assert first["catch_up_succeeded_count"] == 1
     assert second["discrepancy_type_counts"].get("fully_reconciled_local_present", 0) == 1
     assert second["catch_up_attempted_count"] == 0
+
+
+def test_reconciliation_emits_progress_callback_with_window_and_counters(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    _write_merged(
+        config,
+        [
+            {
+                "CIK": "320193",
+                "Form Type": "8-K",
+                "Date Filed": "2025-01-15",
+                "Filename": "edgar/data/320193/0000320193-25-000010.txt",
+            },
+            {
+                "CIK": "320193",
+                "Form Type": "8-K",
+                "Date Filed": "2025-01-16",
+                "Filename": "edgar/data/320193/0000320193-25-000011.txt",
+            },
+        ],
+    )
+    feed = FakeFeedClient(
+        [
+            _candidate("edgar/data/320193/0000320193-25-000010.txt"),
+            _candidate("edgar/data/320193/0000320193-25-000011.txt"),
+        ]
+    )
+
+    progress_events: list[dict[str, object]] = []
+
+    out = run_reconciliation(
+        config,
+        feed_client=feed,
+        warm_fetcher=FakeWarmFetcher([]),
+        catch_up_warm=False,
+        refresh_lookup=True,
+        date_from="2025-01-01",
+        date_to="2025-01-31",
+        progress_callback=lambda payload: progress_events.append(dict(payload)),
+    )
+
+    assert out["reconciled_row_count"] == 2
+    assert progress_events
+    phases = {str(event.get("phase")) for event in progress_events}
+    assert "reconcile.run.start" in phases
+    assert "reconcile.run.filtered_merged" in phases
+    assert "reconcile.run.filtered_feed" in phases
+    assert "reconcile.run.rows" in phases
+    assert "reconcile.run.lookup_update" in phases
+    assert "reconcile.run.complete" in phases
+
+    row_events = [event for event in progress_events if event.get("phase") == "reconcile.run.rows"]
+    assert row_events
+    assert any("window_total" in event for event in row_events)
+    assert any("window_date" in event for event in row_events)
+
+    latest = row_events[-1]
+    counters = dict(latest.get("counters") or {})
+    assert counters["reconciled_row_count"] >= 1
+    assert "catch_up_attempted_count" in counters
+    assert "catch_up_succeeded_count" in counters
+    assert "catch_up_failed_count" in counters
+    assert "catch_up_skipped_count" in counters
