@@ -70,6 +70,7 @@ def test_lookup_refresh_help_and_query_help(monkeypatch, tmp_path: Path) -> None
     assert refresh_help.exit_code == 0
     assert "--summary-json" in refresh_help.output
     assert "--progress-json" in refresh_help.output
+    assert "--progress-heartbeat-seconds" in refresh_help.output
     assert "--include-global-filings" in refresh_help.output
     assert query_help.exit_code == 0
     assert "--scope" in query_help.output
@@ -263,4 +264,7 @@ def test_lookup_refresh_summary_json_with_progress_json_keeps_stdout_clean(monke
 
     payload = json.loads(result.stdout.strip())
     assert payload["filings_row_count"] == 1
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(stderr_lines) >= 2
+    assert all('"event": "progress"' in line for line in stderr_lines)
 

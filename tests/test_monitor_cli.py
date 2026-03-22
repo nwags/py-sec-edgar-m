@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from click.testing import CliRunner
 
@@ -22,6 +23,7 @@ def test_monitor_poll_help_includes_expected_options() -> None:
     assert "--warm / --no-warm" in result.output
     assert "--summary-json" in result.output
     assert "--progress-json" in result.output
+    assert "--progress-heartbeat-seconds" in result.output
     assert "--refresh-lookup / --no-refresh-lookup" in result.output
     assert "--execute-extraction / --no-execute-extraction" in result.output
     assert "--persist-filing-parties / --no-persist-filing-parties" in result.output
@@ -72,6 +74,42 @@ def test_monitor_poll_summary_json_with_progress_json_keeps_stdout_clean(monkeyp
     payload = json.loads(result.stdout)
     assert payload["detected_candidate_count"] == 3
 
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(stderr_lines) == 2
+    assert all('"event": "progress"' in line for line in stderr_lines)
+
+
+def test_monitor_poll_progress_json_heartbeat_is_opt_in(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: object())
+
+    def fake_poll(config, **kwargs):
+        time.sleep(0.25)
+        return {
+            "detected_candidate_count": 1,
+            "filtered_candidate_count": 1,
+            "warm_attempted_count": 0,
+            "warm_succeeded_count": 0,
+            "warm_failed_count": 0,
+        }
+
+    monkeypatch.setattr(cli, "run_monitor_poll", fake_poll)
+    result = runner.invoke(
+        cli.main,
+        [
+            "monitor",
+            "poll",
+            "--summary-json",
+            "--progress-json",
+            "--progress-heartbeat-seconds",
+            "0.05",
+        ],
+    )
+    assert result.exit_code == 0
+
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert len(stderr_lines) > 2
+    assert all('"event": "progress"' in line for line in stderr_lines)
 
 
 def test_monitor_loop_summary_json(monkeypatch) -> None:

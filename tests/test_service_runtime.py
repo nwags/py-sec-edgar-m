@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import time
 import signal
 
 from py_sec_edgar.config import AppConfig
@@ -348,6 +349,7 @@ def test_run_monitor_once_progress_json_emits_stderr_progress(monkeypatch, tmp_p
 
     stderr_lines = [line for line in captured.err.splitlines() if line.strip()]
     assert stderr_lines
+    assert len(stderr_lines) == 2
     assert all('"event": "progress"' in line for line in stderr_lines)
 
 
@@ -360,3 +362,48 @@ def test_main_monitor_once_progress_json_passes_flag(monkeypatch):
     assert exit_code == 0
     assert calls
     assert calls[0]["progress_json"] is True
+    assert calls[0]["progress_heartbeat_seconds"] == 0.0
+
+
+def test_run_monitor_once_progress_json_heartbeat_is_opt_in(monkeypatch, tmp_path, capsys):
+    config = AppConfig.from_project_root(tmp_path)
+
+    monkeypatch.setattr(runtime, "load_config", lambda: config)
+
+    def fake_poll(config_arg, **kwargs):
+        time.sleep(0.25)
+        return {
+            "detected_candidate_count": 3,
+            "filtered_candidate_count": 1,
+            "warm_attempted_count": 1,
+            "warm_succeeded_count": 1,
+            "warm_failed_count": 0,
+            "lookup_refresh_performed": True,
+            "lookup_refresh_skipped_reason": None,
+            "total_elapsed_seconds": 0.25,
+        }
+
+    monkeypatch.setattr(runtime, "run_monitor_poll", fake_poll)
+    out = runtime.run_monitor_once(
+        settings=_runtime_settings(),
+        progress_json=True,
+        progress_heartbeat_seconds=0.05,
+    )
+    captured = capsys.readouterr()
+
+    assert out["warm_succeeded_count"] == 1
+    stderr_lines = [line for line in captured.err.splitlines() if line.strip()]
+    assert len(stderr_lines) > 2
+    assert all('"event": "progress"' in line for line in stderr_lines)
+
+
+def test_main_monitor_once_progress_heartbeat_seconds_passes_flag(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(runtime, "run_monitor_once", lambda **kwargs: calls.append(kwargs) or {})
+    exit_code = runtime.main(["monitor-once", "--progress-json", "--progress-heartbeat-seconds", "1.5"])
+
+    assert exit_code == 0
+    assert calls
+    assert calls[0]["progress_json"] is True
+    assert calls[0]["progress_heartbeat_seconds"] == 1.5

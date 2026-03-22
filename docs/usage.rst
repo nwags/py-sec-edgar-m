@@ -335,6 +335,8 @@ Monitor correctness hardening:
 Operator progress and interruption behavior:
 
 - `lookup refresh`, `monitor poll`, `reconcile run`, and `python -m py_sec_edgar.service_runtime monitor-once` support optional `--progress-json` to emit compact NDJSON progress events to stderr,
+- machine progress is event-driven by default in `--progress-json` mode (no periodic liveness heartbeat unless explicitly requested),
+- optional machine liveness heartbeat is enabled with `--progress-heartbeat-seconds FLOAT`; omitted or `0` disables it, positive values emit liveness only after idle periods,
 - each machine progress event includes `event`, `phase`, `elapsed_seconds`, `counters` and only includes optional `detail`/`window_date`/`window_index`/`window_total` when meaningful,
 - without `--progress-json`, existing human heartbeat/progress behavior remains unchanged in TTY mode,
 - `--summary-json` remains clean JSON-only stdout for final summaries,

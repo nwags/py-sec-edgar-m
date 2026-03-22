@@ -150,7 +150,12 @@ def run_api_service(*, settings: dict[str, object] | None = None) -> None:
     uvicorn.run(app, host=str(runtime["api_host"]), port=int(runtime["api_port"]))
 
 
-def run_monitor_once(*, settings: dict[str, object] | None = None, progress_json: bool = False) -> dict[str, object]:
+def run_monitor_once(
+    *,
+    settings: dict[str, object] | None = None,
+    progress_json: bool = False,
+    progress_heartbeat_seconds: float = 0.0,
+) -> dict[str, object]:
     runtime = settings or load_runtime_settings()
     config = load_config()
     _emit_json(_runtime_snapshot("monitor-once", config, runtime))
@@ -159,6 +164,7 @@ def run_monitor_once(*, settings: dict[str, object] | None = None, progress_json
         enabled=machine_progress or progress_enabled(summary_json=False),
         phase="service_runtime.monitor_once",
         machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
     )
     with progress:
         result = run_monitor_poll(
@@ -331,6 +337,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("api", help="Run FastAPI service.")
     monitor_once = sub.add_parser("monitor-once", help="Run one monitor poll and exit.")
     monitor_once.add_argument("--progress-json", action="store_true", help="Emit machine-readable NDJSON progress events to stderr.")
+    monitor_once.add_argument(
+        "--progress-heartbeat-seconds",
+        type=float,
+        default=0.0,
+        help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
+    )
     sub.add_parser("monitor-loop", help="Run continuous monitor loop service.")
     return parser
 
@@ -343,7 +355,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     if args.command == "monitor-once":
         try:
-            run_monitor_once(progress_json=bool(getattr(args, "progress_json", False)))
+            run_monitor_once(
+                progress_json=bool(getattr(args, "progress_json", False)),
+                progress_heartbeat_seconds=max(0.0, float(getattr(args, "progress_heartbeat_seconds", 0.0))),
+            )
             return 0
         except KeyboardInterrupt:
             print("Interrupted by user.", file=sys.stderr, flush=True)

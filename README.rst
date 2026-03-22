@@ -11,13 +11,14 @@ Overview
 
 Current capabilities include:
 
-- reference-data normalization from SEC source files,
-- EDGAR index refresh + merged parquet materialization,
-- candidate selection and filing downloads,
-- optional serial extraction and filing-party persistence/query,
-- API local-first metadata/content serving with SEC fallback persistence,
-- feed-driven monitor poll/loop for cache warming over existing mirror layout.
-- one-shot feed-plus-index reconciliation with discrepancy persistence and optional catch-up warming.
+- reference-data normalization from SEC source files into canonical parquet tables,
+- EDGAR index refresh + merged parquet materialization with operator-facing runtime controls,
+- backfill candidate selection plus bounded concurrent downloads and optional serial extraction,
+- filing-party persistence and query workflows for supported ownership/insider forms,
+- local lookup refresh/query artifacts for fast local operator retrieval,
+- API local-first metadata/content serving with SEC fallback persistence into canonical cache paths,
+- feed-driven monitor poll/loop with incremental lookup registration and persisted event history,
+- one-shot feed-plus-index reconciliation with durable discrepancy/event artifacts and optional catch-up warming.
 
 Design Philosophy
 =================
@@ -188,7 +189,9 @@ Human-oriented progress/activity output is kept separate so JSON mode stays scri
 Operator-readiness hardening:
 
 - long-running `lookup refresh`, `monitor poll`, `reconcile run`, and `service_runtime monitor-once` support optional `--progress-json` for compact NDJSON progress events on stderr,
-- each machine progress event has a stable compact schema: `event`, `phase`, `elapsed_seconds`, `counters` (with optional `detail`, `window_date`, `window_index`, `window_total` only when meaningful),
+- machine progress is event-driven by default in `--progress-json` mode (no periodic liveness heartbeat by default),
+- optional liveness heartbeat is explicit via `--progress-heartbeat-seconds FLOAT`; omitted or `0` disables, positive values emit heartbeat only after idle periods,
+- each machine progress event keeps the stable compact schema: `event`, `phase`, `elapsed_seconds`, `counters` (with optional `detail`, `window_date`, `window_index`, `window_total` only when meaningful),
 - without `--progress-json`, human heartbeat/progress behavior remains unchanged in TTY mode,
 - final `--summary-json` output remains clean JSON on stdout,
 - Ctrl+C interruption now exits cleanly without Python traceback for those operator-facing flows.
@@ -267,47 +270,47 @@ Operator Notes
   3. `py-sec-edgar backfill ...`
   4. `py-sec-edgar filing-parties query ...`
 
-Roadmap (Prioritized)
-=====================
+Roadmap and Next Priorities
+===========================
 
-Priority 1 — Core Reliability & Usability
------------------------------------------
+Current Status
+--------------
 
-- Expand testing coverage (pipeline, regression, fixtures).
-- Faster content lookup (indexing over downloaded and normalized artifacts).
-- Harden API retrieval observability around fallback failures and upstream SEC errors.
+The project is now in a post-feature operator-polish phase for the core ingestion stack:
 
-Priority 2 — Monitoring / Incremental Ingestion
-------------------------------------------------
+- reliability and regression coverage are materially stronger than earlier roadmap stages,
+- local lookup refresh/query and API local-first retrieval with SEC fallback persistence are implemented,
+- feed-driven monitor poll/loop, incremental lookup registration, and reconciliation with optional catch-up are implemented,
+- portable service runtime entrypoints and machine-readable runtime summaries are implemented,
+- machine progress JSON and `--summary-json` stdout contracts are already in place for operator-facing commands.
 
-- RSS-based ingestion.
-- Incremental updates without full reruns.
-- Value:
-  - faster awareness of new filings,
-  - lower-latency ingestion,
-  - reduced need for repeated large pulls.
-- RSS complements index-based ingestion rather than replacing it.
+Next Priorities
+---------------
 
-Priority 3 — Ingestion Efficiency & Scale
------------------------------------------
+1. Ingestion efficiency and scale
 
-- Improve ingestion efficiency holistically, not just by adding threads.
-- Evaluate concurrency, batching strategies, and elimination of redundant work.
-- Use SEC bulk distribution mechanisms where applicable.
-- Prefer bulk access paths over parallel scraping when bulk is more appropriate.
+- continue reducing redundant work and improving bounded concurrency throughput,
+- favor SEC-appropriate bulk/distribution paths when they are a better fit than additional parallel scraping.
 
-Priority 4 — Limited Metadata Extraction
-----------------------------------------
+2. Telemetry and operator UX polish
 
-- Filing/entity/relationship/subject metadata only.
-- Deep extraction remains out of scope.
+- keep machine telemetry compact, stable, and event-driven,
+- continue improving progress/event clarity, fallback/skip diagnostics, and service-runtime observability.
 
-Future (Back Burner)
---------------------
+3. Reliability and regression hardening
 
-- Workflow expansion.
-- Rich query surfaces.
-- Advanced downstream workflows.
+- expand regression fixtures around monitor/reconciliation/lookup interactions and failure paths,
+- keep resumability, idempotence, and output-contract stability first-class in new changes.
+
+4. Limited metadata extraction expansion
+
+- extend only high-confidence metadata extraction where reliability is demonstrable,
+- keep deep semantic parsing and full financial modeling out of scope for this repository.
+
+5. Storage-tier and distributed-awareness readiness
+
+- preserve canonical path/storage contracts and derived-vs-durable-state boundaries,
+- guide near-term decisions with `docs/FUTURE_DISTRIBUTED_STORAGE_PRINCIPLES.md` while remaining local-first by default.
 
 Attribution
 ===========

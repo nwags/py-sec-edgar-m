@@ -25,6 +25,7 @@ def test_reconcile_run_help_includes_expected_options() -> None:
     assert "--refresh-lookup / --no-refresh-lookup" in result.output
     assert "--summary-json" in result.output
     assert "--progress-json" in result.output
+    assert "--progress-heartbeat-seconds" in result.output
 
 
 def test_reconcile_run_summary_json(monkeypatch) -> None:
@@ -95,6 +96,8 @@ def test_reconcile_run_summary_json_with_progress_json_keeps_stdout_clean(monkey
     payload = json.loads(result.stdout)
     assert payload["reconciled_row_count"] == 1
 
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert all('"event": "progress"' in line for line in stderr_lines)
 
 
 def test_reconcile_run_keyboard_interrupt_exits_cleanly(monkeypatch) -> None:

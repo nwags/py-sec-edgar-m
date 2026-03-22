@@ -39,6 +39,40 @@ def test_progress_heartbeat_emits_periodically_while_blocked() -> None:
     assert "phase=test.phase" in output
 
 
+def test_machine_progress_is_event_driven_by_default_no_periodic_heartbeat() -> None:
+    stream = _TtyBuffer()
+    with ProgressHeartbeat(
+        enabled=True,
+        machine_json=True,
+        phase="test.machine",
+        interval_seconds=0.05,
+        stream=stream,
+    ):
+        time.sleep(0.25)
+
+    payloads = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    assert len(payloads) == 2
+    assert payloads[0]["event"] == "progress"
+    assert payloads[1].get("detail") == "done"
+
+
+def test_machine_progress_liveness_heartbeat_is_opt_in() -> None:
+    stream = _TtyBuffer()
+    with ProgressHeartbeat(
+        enabled=True,
+        machine_json=True,
+        phase="test.machine",
+        interval_seconds=0.05,
+        machine_liveness_seconds=0.06,
+        stream=stream,
+    ):
+        time.sleep(0.25)
+
+    payloads = [json.loads(line) for line in stream.getvalue().splitlines() if line.strip()]
+    assert len(payloads) > 2
+    assert payloads[-1].get("detail") == "done"
+
+
 def test_machine_progress_emits_compact_json_lines() -> None:
     stream = _TtyBuffer()
     with ProgressHeartbeat(

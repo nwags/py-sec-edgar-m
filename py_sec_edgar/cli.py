@@ -275,10 +275,18 @@ def lookup_group() -> None:
     default=False,
     help="Emit machine-readable NDJSON progress events to stderr.",
 )
+@click.option(
+    "--progress-heartbeat-seconds",
+    type=click.FloatRange(min=0.0),
+    default=0.0,
+    show_default=True,
+    help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
+)
 def lookup_refresh(
     include_global_filings: bool,
     summary_json: bool,
     progress_json: bool,
+    progress_heartbeat_seconds: float,
 ) -> None:
     config = load_config()
     machine_progress = progress_machine_enabled(progress_json=progress_json)
@@ -286,11 +294,10 @@ def lookup_refresh(
         enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="lookup.refresh",
         machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
     )
     try:
         with progress:
-            if machine_progress:
-                progress.emit_event(detail="lookup_refresh_started")
             result = refresh_local_lookup_indexes(
                 config,
                 include_global_filings=include_global_filings,
@@ -307,8 +314,6 @@ def lookup_refresh(
                     ],
                 )
             )
-            if machine_progress:
-                progress.emit_event(detail="lookup_refresh_completed")
     except FileNotFoundError as exc:
         message = str(exc)
         if "Merged index file not found:" in message:
@@ -498,6 +503,13 @@ def monitor_group() -> None:
     default=False,
     help="Emit machine-readable NDJSON progress events to stderr.",
 )
+@click.option(
+    "--progress-heartbeat-seconds",
+    type=click.FloatRange(min=0.0),
+    default=0.0,
+    show_default=True,
+    help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
+)
 def monitor_poll(
     warm: bool,
     form_types: tuple[str, ...],
@@ -511,6 +523,7 @@ def monitor_poll(
     refresh_lookup: bool,
     summary_json: bool,
     progress_json: bool,
+    progress_heartbeat_seconds: float,
 ) -> None:
     config = load_config()
     machine_progress = progress_machine_enabled(progress_json=progress_json)
@@ -518,11 +531,10 @@ def monitor_poll(
         enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="monitor.poll",
         machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
     )
     try:
         with progress:
-            if machine_progress:
-                progress.emit_event(detail="monitor_poll_started")
             result = run_monitor_poll(
                 config,
                 warm=warm,
@@ -549,8 +561,6 @@ def monitor_poll(
                     ],
                 )
             )
-            if machine_progress:
-                progress.emit_event(detail="monitor_poll_completed")
     except KeyboardInterrupt as exc:
         raise click.ClickException("Interrupted by user.") from exc
 
@@ -731,6 +741,13 @@ def reconcile_group() -> None:
     default=False,
     help="Emit machine-readable NDJSON progress events to stderr.",
 )
+@click.option(
+    "--progress-heartbeat-seconds",
+    type=click.FloatRange(min=0.0),
+    default=0.0,
+    show_default=True,
+    help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
+)
 def reconcile_run(
     recent_days: int | None,
     date_from: str | None,
@@ -742,6 +759,7 @@ def reconcile_run(
     refresh_lookup: bool,
     summary_json: bool,
     progress_json: bool,
+    progress_heartbeat_seconds: float,
 ) -> None:
     config = load_config()
     machine_progress = progress_machine_enabled(progress_json=progress_json)
@@ -749,11 +767,10 @@ def reconcile_run(
         enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="reconcile.run",
         machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
     )
     try:
         with progress:
-            if machine_progress:
-                progress.emit_event(detail="reconcile_started")
             result = run_reconciliation(
                 config,
                 recent_days=recent_days,
@@ -778,8 +795,6 @@ def reconcile_run(
                     ],
                 )
             )
-            if machine_progress:
-                progress.emit_event(detail="reconcile_completed")
     except KeyboardInterrupt as exc:
         raise click.ClickException("Interrupted by user.") from exc
 

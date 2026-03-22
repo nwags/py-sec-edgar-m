@@ -27,10 +27,11 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
         self.interval_seconds = max(0.2, float(interval_seconds))
         self.stream = stream or sys.stderr
         self.machine_json = bool(machine_json)
-        self.machine_liveness_seconds = max(
-            self.interval_seconds,
-            float(machine_liveness_seconds) if machine_liveness_seconds is not None else max(5.0, self.interval_seconds * 2.0),
-        )
+        if machine_liveness_seconds is None:
+            self.machine_liveness_seconds: float | None = None
+        else:
+            requested_liveness = float(machine_liveness_seconds)
+            self.machine_liveness_seconds = requested_liveness if requested_liveness > 0 else None
 
         self._started_at = time.monotonic()
         self._stop_event = threading.Event()
@@ -51,8 +52,10 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
                 self.emit_event()
             else:
                 self._emit_once(prefix="progress_start")
-            self._thread = threading.Thread(target=self._run, name="progress-heartbeat", daemon=True)
-            self._thread.start()
+            thread_required = (not self.machine_json) or (self.machine_liveness_seconds is not None)
+            if thread_required:
+                self._thread = threading.Thread(target=self._run, name="progress-heartbeat", daemon=True)
+                self._thread.start()
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:
@@ -120,7 +123,10 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
             self._emit_once(prefix=f"progress_{final_status}")
 
     def _run(self) -> None:
-        while not self._stop_event.wait(self.interval_seconds):
+        wait_seconds = self.interval_seconds
+        if self.machine_json and self.machine_liveness_seconds is not None:
+            wait_seconds = min(wait_seconds, self.machine_liveness_seconds)
+        while not self._stop_event.wait(wait_seconds):
             if self.machine_json:
                 self._emit_machine_event(is_substantive=False)
             else:
@@ -155,6 +161,8 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
             )
 
             if not is_substantive:
+                if self.machine_liveness_seconds is None:
+                    return
                 if now - self._last_substantive_event_at < self.machine_liveness_seconds:
                     return
                 if now - self._last_machine_emitted_at < self.machine_liveness_seconds:
