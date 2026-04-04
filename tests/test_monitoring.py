@@ -17,6 +17,7 @@ from py_sec_edgar.monitoring import (
     run_monitor_loop,
     run_monitor_poll,
 )
+from py_sec_edgar.resolution_provenance import filing_resolution_provenance_path
 
 
 class FakeFeedClient:
@@ -113,6 +114,12 @@ def test_monitor_poll_persists_canonical_local_file_path(tmp_path: Path) -> None
     assert out["warm_succeeded_count"] == 1
     assert expected.exists()
     assert expected.read_bytes() == b"abc"
+    provenance = pd.read_parquet(filing_resolution_provenance_path(config))
+    assert len(provenance.index) == 1
+    row = provenance.iloc[0]
+    assert row["flow"] == "monitor"
+    assert row["decision"] == "warm_succeeded"
+    assert bool(row["persisted_locally"]) is True
 
 
 def test_seen_but_missing_local_triggers_self_healing_rewarm_success(tmp_path: Path) -> None:
@@ -317,6 +324,12 @@ def test_monitor_poll_failure_records_event_and_state(tmp_path: Path) -> None:
 
     events_df = pd.read_parquet(monitor_events_path(config))
     assert "warm_failed" in set(events_df["action"].astype(str).tolist())
+    provenance = pd.read_parquet(filing_resolution_provenance_path(config))
+    assert len(provenance.index) == 1
+    row = provenance.iloc[0]
+    assert row["flow"] == "monitor"
+    assert row["decision"] == "warm_failed"
+    assert bool(row["persisted_locally"]) is False
 
 
 def test_parse_atom_feed_candidates_supports_text_derived_filename_shape() -> None:

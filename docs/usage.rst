@@ -206,6 +206,10 @@ Lookup artifacts are written under the configured normalized root:
 - `local_lookup_artifacts.parquet`
 - `local_lookup_filings_all.parquet` (only when `--include-global-filings` is used)
 
+SEC source/surface registry authority is written by `refdata refresh`:
+
+- `sec_source_surfaces.parquet`
+
 API local-first retrieval
 -------------------------
 
@@ -227,8 +231,23 @@ Run with Uvicorn (example):
 Current endpoints:
 
 - `GET /health`
+- `GET /filings/search` (public entity-aware filing search over derived entity index)
 - `GET /filings/{accession_number}` (metadata endpoint; returns when lookup or merged-index metadata resolves accession)
 - `GET /filings/{accession_number}/content` (local file hit first; local miss triggers SEC fetch + persist to canonical cache mirror path)
+- `GET /filings/{accession_number}/augmentations` (public raw augmentation history)
+- `GET /filings/{accession_number}/overlay` (public deterministic resolved overlay view)
+- `GET /filings/{accession_number}/augmentation-submissions` (public submission-level review summary)
+- `GET /augmentations/events` (public generalized event stream; primary)
+- `GET /filings/{accession_number}/events` (public filing-scoped generalized events; primary)
+- `GET /augmentations/events/summary` (public deterministic generalized grouped summary; primary)
+- `GET /augmentations/submissions` (public cross-accession reviewer submission query)
+- `GET /augmentations/submissions/{submission_id}` (public reviewer submission detail)
+- `GET /augmentations/submissions/{submission_id}/lifecycle-events` (compatibility alias for lifecycle events)
+- `GET /augmentations/submissions/{submission_id}/overlay-impact` (public resolved-overlay contribution diagnostics by accession)
+- `GET /augmentations/submissions/{submission_id}/entity-impact` (public derived entity-index contribution rows)
+- `GET /augmentations/submissions/{submission_id}/review-bundle` (public compact reviewer/operator export bundle)
+- `POST /admin/augmentations/submissions` (authenticated augmentation ingestion)
+- `POST /admin/augmentations/submissions/{submission_id}/lifecycle` (authenticated lifecycle transition)
 
 Content retrieval contract:
 
@@ -236,6 +255,187 @@ Content retrieval contract:
 2. if local file exists, serve it directly,
 3. if local file is missing and metadata resolves accession, fetch from SEC and persist to canonical path,
 4. subsequent requests for that accession are local hits.
+
+Remote API resolution attempts are durably recorded in:
+
+- `filing_resolution_provenance.parquet`
+
+Augmentation sidecars
+---------------------
+
+Augmentation ingestion is external-producer-oriented and additive only; canonical filing content is unchanged.
+
+Enable operator ingestion key:
+
+.. code-block:: console
+
+    export PY_SEC_EDGAR_AUGMENTATION_API_KEY=replace-with-operator-key
+
+Authenticated ingestion request:
+
+.. code-block:: console
+
+    curl -sS -X POST "http://127.0.0.1:8000/admin/augmentations/submissions" \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: $PY_SEC_EDGAR_AUGMENTATION_API_KEY" \
+      -d '{"producer_id":"ext-annotator","layer_type":"entities","schema_version":"v1","items":[{"accession_number":"0000320193-25-000010","augmentation_type":"entity_tag","payload":{"entities":[{"text":"Apple","type":"ORG"}]}}]}'
+
+Public additive reads:
+
+.. code-block:: console
+
+    curl -sS "http://127.0.0.1:8000/filings/0000320193-25-000010/augmentations"
+    curl -sS "http://127.0.0.1:8000/filings/0000320193-25-000010/overlay"
+    curl -sS "http://127.0.0.1:8000/filings/search?entity_text=apple"
+    curl -sS "http://127.0.0.1:8000/filings/0000320193-25-000010/augmentation-submissions"
+    curl -sS "http://127.0.0.1:8000/augmentations/events?producer_id=ext-annotator&event_family=governance"
+    curl -sS "http://127.0.0.1:8000/filings/0000320193-25-000010/events"
+    curl -sS "http://127.0.0.1:8000/augmentations/events/summary?group_by=event_family&group_by=event_type"
+    curl -sS "http://127.0.0.1:8000/augmentations/governance-events?producer_id=ext-annotator"  # compatibility alias
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions?layer_type=entities&has_governance_warnings=true"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions?submission_id=<submission_id>"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions?accession_number=0000320193-25-000010"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions/<submission_id>"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions/<submission_id>/lifecycle-events"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions/<submission_id>/overlay-impact"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions/<submission_id>/entity-impact"
+    curl -sS "http://127.0.0.1:8000/augmentations/submissions/<submission_id>/review-bundle"
+    curl -sS "http://127.0.0.1:8000/filings/0000320193-25-000010?include_augmentations=true&augmentation_view=history"
+    curl -sS "http://127.0.0.1:8000/filings/0000320193-25-000010?include_augmentations=true&augmentation_view=resolved"
+
+Lifecycle transition (admin):
+
+.. code-block:: console
+
+    curl -sS -X POST "http://127.0.0.1:8000/admin/augmentations/submissions/<submission_id>/lifecycle" \
+      -H "Content-Type: application/json" \
+      -H "X-API-Key: $PY_SEC_EDGAR_AUGMENTATION_API_KEY" \
+      -d '{"to_state":"disabled","reason":"bad_run","changed_by":"ops","source":"manual_review"}'
+
+Resolved overlay selection policy:
+
+- policy id: `latest_per_producer_layer_v1`
+- latest means `received_at DESC`, tie-break `submission_id ASC`
+- selection scope is one winning submission per `(producer_id, layer_type)` bucket
+- raw history remains available separately via `/filings/{accession_number}/augmentations`
+
+Shared history/overlay query filters:
+
+- `augmentation_type`
+- `schema_version`
+- `received_at_from`
+- `received_at_to`
+- `include_submission_metadata=true`
+- `lifecycle_state`
+
+Timestamp filtering:
+
+- accepted input format: RFC3339/ISO-8601 (`Z` or explicit offset accepted),
+- bounds are inclusive (`received_at >= received_at_from`, `received_at <= received_at_to`),
+- invalid timestamp input returns HTTP `422`.
+
+Governance time filters:
+
+- `event_time_from` and `event_time_to` are the canonical governance timestamp filters,
+- `received_at_from` and `received_at_to` remain backward-compatible aliases for governance reads.
+
+Recommended sidecar family naming conventions (guidance):
+
+- `entity_mentions`
+- `entity_links`
+- `temporal_expressions`
+- `event_spans`
+- `document_labels`
+
+Sidecar artifacts are persisted under normalized root:
+
+- `augmentation_submissions.parquet`
+- `augmentation_items.parquet`
+- `augmentation_governance_events.parquet`
+- `augmentation_submission_lifecycle_events.parquet`
+- `augmentation_entity_index.parquet` (derived/rebuildable filing-search index)
+- `augmentation_raw_requests/{submission_id}.json`
+
+Advisory governance semantics:
+
+- contract id: `augmentation_family_conventions_v1`,
+- family conventions are guidance for producer ergonomics and review diagnostics,
+- governance warnings do not reject otherwise valid submissions,
+- stable warning codes:
+  - `gov_unknown_family`
+  - `gov_layer_type_mismatch`
+  - `gov_augmentation_type_mismatch`
+  - `gov_missing_recommended_payload_keys`
+
+Lifecycle semantics:
+
+- stable states:
+  - `active`
+  - `superseded`
+  - `withdrawn`
+  - `disabled`
+- lifecycle transitions are append-only and auditable,
+- lifecycle is an operational control state and is distinct from review/approval semantics,
+- history reads remain available for all states by default,
+- resolved overlay selection order is:
+  1. apply request filters,
+  2. resolve current lifecycle state,
+  3. exclude non-`active` submissions,
+  4. apply `latest_per_producer_layer_v1`.
+
+Overlay-impact reason codes (stable):
+
+- `selected`
+- `lifecycle_ineligible`
+- `superseded_by_winner`
+- `no_eligible_rows`
+
+Reviewer playbook:
+
+1. inspect cross-accession submissions (`GET /augmentations/submissions`, optional `submission_id`/`accession_number` filters),
+2. inspect generalized events (`GET /augmentations/events`, `GET /filings/{accession_number}/events`),
+3. inspect generalized event summary (`GET /augmentations/events/summary`),
+4. inspect impact on resolved overlay and entity search (`GET /augmentations/submissions/{submission_id}/overlay-impact`, `GET /augmentations/submissions/{submission_id}/entity-impact`, `GET /filings/search`),
+5. export compact review snapshot (`GET /augmentations/submissions/{submission_id}/review-bundle`).
+
+Correction note:
+
+- Prior governance-specific endpoint design was too narrow and has been corrected in this phase.
+
+Generalized event error contract:
+
+- redesigned event endpoints and compatibility event aliases return:
+  `{"error":{"code":"...","message":"...","details":{...}}}`
+
+Reviewer/operator CLI wrappers:
+
+.. code-block:: console
+
+    py-sec-edgar augmentations submission <submission_id>
+    py-sec-edgar augmentations events --event-family governance
+    py-sec-edgar augmentations events-summary --group-by event_family --group-by event_type
+    py-sec-edgar augmentations filing-events <accession_number>
+    py-sec-edgar augmentations lifecycle-events <submission_id>
+    py-sec-edgar augmentations governance-summary <submission_id>
+    py-sec-edgar augmentations governance-events <submission_id>
+    py-sec-edgar augmentations overlay-impact <submission_id>
+    py-sec-edgar augmentations entity-impact <submission_id>
+    py-sec-edgar augmentations review-bundle <submission_id>
+    py-sec-edgar augmentations review-bundle <submission_id> --json
+
+Entity-aware filing search:
+
+- query surface: `GET /filings/search`,
+- source: `augmentation_entity_index.parquet` (derived from resolved overlays only),
+- lifecycle effect: only active submissions are eligible to contribute,
+- supported entity families for indexing in this phase:
+  - `entity_mentions`
+  - `entity_links`
+- matching:
+  - `entity_normalized` is exact,
+  - `entity_text` is case-insensitive substring over normalized values,
+  - filing filters (`cik`, `form_type`, `filing_date_from`, `filing_date_to`) compose with AND,
+- result ordering: `filing_date DESC`, then `accession_number ASC`.
 
 Portable service runtime (optional)
 -----------------------------------
@@ -313,6 +513,7 @@ Reconciliation discrepancy/event artifacts (configured normalized root):
 
 - `reconciliation_discrepancies.parquet`
 - `reconciliation_events.parquet`
+- `filing_resolution_provenance.parquet` (cross-flow remote resolution provenance)
 
 Reconciliation catch-up behavior:
 

@@ -16,7 +16,10 @@ Current capabilities include:
 - backfill candidate selection plus bounded concurrent downloads and optional serial extraction,
 - filing-party persistence and query workflows for supported ownership/insider forms,
 - local lookup refresh/query artifacts for fast local operator retrieval,
+- accession-centered filing-resolution primitives reused by API/monitor/reconciliation flows,
+- normalized SEC source/surface registry artifact for explicit provider/surface authority,
 - API local-first metadata/content serving with SEC fallback persistence into canonical cache paths,
+- authenticated augmentation sidecar ingestion keyed by accession number with optional overlay reads,
 - feed-driven monitor poll/loop with incremental lookup registration and persisted event history,
 - one-shot feed-plus-index reconciliation with durable discrepancy/event artifacts and optional catch-up warming.
 
@@ -120,7 +123,22 @@ The repository includes an additive FastAPI surface under `py_sec_edgar/api/` on
 
 - `GET /health`
 - `GET /filings/{accession_number}`
+- `GET /filings/search`
 - `GET /filings/{accession_number}/content`
+- `GET /filings/{accession_number}/augmentations`
+- `GET /filings/{accession_number}/overlay`
+- `GET /filings/{accession_number}/augmentation-submissions`
+- `GET /augmentations/events` (primary generalized event stream)
+- `GET /filings/{accession_number}/events` (primary filing-scoped generalized events)
+- `GET /augmentations/events/summary` (primary generalized grouped summary)
+- `GET /augmentations/submissions`
+- `GET /augmentations/submissions/{submission_id}`
+- `GET /augmentations/submissions/{submission_id}/lifecycle-events` (compatibility alias)
+- `GET /augmentations/submissions/{submission_id}/overlay-impact`
+- `GET /augmentations/submissions/{submission_id}/entity-impact`
+- `GET /augmentations/submissions/{submission_id}/review-bundle`
+- `POST /admin/augmentations/submissions` (operator API key required)
+- `POST /admin/augmentations/submissions/{submission_id}/lifecycle` (operator API key required)
 
 Current API behavior is local-first:
 
@@ -130,6 +148,126 @@ Current API behavior is local-first:
 4. subsequent requests for that accession are served from local cache.
 
 The API patch does not replace storage layout or CLI ingestion behavior.
+
+Augmentation sidecar model:
+
+- canonical filing content remains immutable and canonical,
+- augmentation payloads are additive sidecars keyed by `accession_number`,
+- ingestion is authenticated with `X-API-Key` against `PY_SEC_EDGAR_AUGMENTATION_API_KEY`,
+- public filing reads remain unchanged by default; overlays are opt-in,
+- raw history view: `GET /filings/{accession_number}/augmentations`,
+- resolved overlay view: `GET /filings/{accession_number}/overlay` (deterministic latest submission per `(producer_id, layer_type)` using `received_at DESC`, `submission_id ASC`).
+- entity-aware filing search: `GET /filings/search` (derived from resolved overlay winners only; lifecycle-aware and entity-family-scoped).
+- submission-summary view: `GET /filings/{accession_number}/augmentation-submissions` for producer/run/layer inspection.
+- generalized event inspection views (primary):
+  - cross-accession: `GET /augmentations/events`
+  - filing-scoped: `GET /filings/{accession_number}/events`
+  - grouped summary: `GET /augmentations/events/summary`
+- cross-accession reviewer submission views:
+  - list/filter: `GET /augmentations/submissions` (supports `submission_id` and `accession_number` filters)
+  - detail: `GET /augmentations/submissions/{submission_id}`
+  - lifecycle history: `GET /augmentations/submissions/{submission_id}/lifecycle-events`
+  - resolved-overlay impact: `GET /augmentations/submissions/{submission_id}/overlay-impact`
+  - entity-index impact: `GET /augmentations/submissions/{submission_id}/entity-impact`
+  - compact export bundle: `GET /augmentations/submissions/{submission_id}/review-bundle`
+
+Advisory governance contract:
+
+- contract id: `augmentation_family_conventions_v1`,
+- conventions are advisory only (no submission rejection from convention mismatch),
+- stable governance warning codes:
+  - `gov_unknown_family`
+  - `gov_layer_type_mismatch`
+  - `gov_augmentation_type_mismatch`
+  - `gov_missing_recommended_payload_keys`
+- governance events are persisted to `augmentation_governance_events.parquet` for audit/review support.
+- lifecycle and governance validation errors expose stable machine-readable codes in API responses.
+- compatibility aliases (transition only, not primary):
+  - `GET /filings/{accession_number}/governance-events`
+  - `GET /augmentations/governance-events`
+  - `GET /augmentations/governance-events/summary`
+  - `GET /augmentations/submissions/{submission_id}/lifecycle-events`
+
+Correction note:
+
+- Prior governance-specific endpoint design was too narrow and has been corrected in this phase.
+
+Submission lifecycle control:
+
+- lifecycle states (stable machine contract):
+  - `active`
+  - `superseded`
+  - `withdrawn`
+  - `disabled`
+- lifecycle transitions are append-only audit events (`augmentation_submission_lifecycle_events.parquet`),
+- current lifecycle state is derived from append-only events (default `active` when no lifecycle events exist),
+- raw augmentation history remains immutable/append-only,
+- resolved overlay eligibility uses lifecycle state and only `active` submissions can win.
+- lifecycle is an operational control contract and is intentionally distinct from any approval semantics.
+
+Reviewer playbook:
+
+1. inspect submissions: `GET /augmentations/submissions`,
+2. inspect generalized events: `GET /augmentations/events` and `/filings/{accession_number}/events`,
+3. inspect generalized event summary: `GET /augmentations/events/summary`,
+4. inspect overlay/entity impact: `GET /augmentations/submissions/{submission_id}/overlay-impact` and `/augmentations/submissions/{submission_id}/entity-impact`,
+5. export compact review bundle: `GET /augmentations/submissions/{submission_id}/review-bundle`.
+
+Metadata endpoint overlay modes:
+
+- `include_augmentations=true` + `augmentation_view=history` (default) returns raw augmentation history rows,
+- `include_augmentations=true` + `augmentation_view=resolved` returns resolved overlay rows.
+
+History and overlay read filters (shared):
+
+- `augmentation_type`
+- `schema_version`
+- `received_at_from`
+- `received_at_to`
+- `include_submission_metadata`
+- `lifecycle_state`
+
+`received_at` filters accept RFC3339/ISO-8601 timestamps (including `Z`/offset) and use inclusive bounds:
+`received_at >= received_at_from` and `received_at <= received_at_to`.
+Generalized event endpoints support canonical aliases `event_time_from` / `event_time_to` with `received_at_*` retained for compatibility.
+Overlay impact uses stable reason codes: `selected`, `lifecycle_ineligible`, `superseded_by_winner`, `no_eligible_rows`.
+
+Reviewer/operator CLI wrappers:
+
+- `py-sec-edgar augmentations submission <submission_id>`
+- `py-sec-edgar augmentations events`
+- `py-sec-edgar augmentations events-summary`
+- `py-sec-edgar augmentations filing-events <accession_number>`
+- `py-sec-edgar augmentations lifecycle-events <submission_id>`
+- `py-sec-edgar augmentations governance-summary <submission_id>`
+- `py-sec-edgar augmentations governance-events <submission_id>`
+- `py-sec-edgar augmentations overlay-impact <submission_id>`
+- `py-sec-edgar augmentations entity-impact <submission_id>`
+- `py-sec-edgar augmentations review-bundle <submission_id>`
+
+Lifecycle-aware overlay selection order:
+
+1. apply request filters,
+2. resolve current lifecycle state per submission,
+3. exclude non-`active` submissions,
+4. apply existing winner policy (`latest_per_producer_layer_v1`).
+
+Entity-aware filing search:
+
+- derived artifact: `augmentation_entity_index.parquet`,
+- source universe: resolved overlay winners only (no raw-history mutation),
+- lifecycle-aware eligibility: only active submissions contribute,
+- current search families: `entity_mentions`, `entity_links`,
+- temporal sidecars remain ingestible/visible but are not indexed for search in this phase.
+
+Deferred in this phase: in-repo tagging/model inference, ontology/entity-graph construction, and multi-tenant auth.
+
+Filing resolution model formalization:
+
+- canonical filing key is `accession_number`,
+- metadata resolution is local lookup first, merged index fallback second,
+- canonical remote content surface is SEC Archives submission `.txt`,
+- remote resolution outcomes are persisted to canonical local paths and recorded in normalized provenance artifacts.
 
 Monitoring state artifacts
 ==========================
@@ -158,6 +296,7 @@ Reconciliation artifacts are stored under the configured normalized root:
 
 - `reconciliation_discrepancies.parquet`
 - `reconciliation_events.parquet`
+- `filing_resolution_provenance.parquet`
 
 Reconciliation is one-shot and operator-oriented:
 
@@ -206,6 +345,16 @@ Default paths (relative to project root):
 - Normalized parquet root: `refdata/normalized`
 - Extracted filing content: alongside downloaded submission files in the cache tree.
 
+Additional normalized artifacts in the current resolution model:
+
+- `sec_source_surfaces.parquet` (SEC provider/surface registry authority)
+- `filing_resolution_provenance.parquet` (cross-flow remote resolution provenance)
+- `augmentation_submissions.parquet` (augmentation submission/run metadata)
+- `augmentation_items.parquet` (augmentation payload rows by accession)
+- `augmentation_governance_events.parquet` (advisory governance diagnostics; audit-oriented)
+- `augmentation_submission_lifecycle_events.parquet` (append-only submission lifecycle transitions)
+- `augmentation_raw_requests/{submission_id}.json` (raw ingestion request bodies)
+
 Environment Overrides
 =====================
 
@@ -215,6 +364,7 @@ You can override runtime roots without changing code:
 - `PY_SEC_EDGAR_DOWNLOAD_ROOT`
 - `PY_SEC_EDGAR_MERGED_INDEX_PATH`
 - `PY_SEC_EDGAR_NORMALIZED_REFDATA_ROOT`
+- `PY_SEC_EDGAR_AUGMENTATION_API_KEY` (enables authenticated augmentation ingestion endpoint)
 
 Portable Runtime (Optional Compose)
 ===================================

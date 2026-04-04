@@ -16,6 +16,7 @@ from py_sec_edgar.api.service import (
 )
 from py_sec_edgar.config import load_config
 from py_sec_edgar.lookup import local_lookup_filings_path
+from py_sec_edgar.resolution_provenance import filing_resolution_provenance_path
 
 
 class FakeFetchClient:
@@ -127,6 +128,12 @@ def test_retrieve_filing_content_remote_fetch_success_persists_and_second_hit_is
     assert second.decision == RetrievalDecision.LOCAL_HIT
     assert second.local_path == first.local_path
     assert len(fetch_client.calls) == 1
+    provenance = pd.read_parquet(filing_resolution_provenance_path(config))
+    assert len(provenance.index) == 1
+    row = provenance.iloc[0]
+    assert row["flow"] == "api"
+    assert row["decision"] == "remote_fetched_and_persisted"
+    assert bool(row["persisted_locally"]) is True
 
 
 def test_retrieve_filing_content_local_first_not_found(tmp_path: Path) -> None:
@@ -168,6 +175,13 @@ def test_retrieve_filing_content_remote_fetch_failure_returns_explicit_failure(t
     assert result.status_code == 404
     assert result.local_path is not None
     assert not result.local_path.exists()
+    provenance = pd.read_parquet(filing_resolution_provenance_path(config))
+    assert len(provenance.index) == 1
+    row = provenance.iloc[0]
+    assert row["flow"] == "api"
+    assert row["decision"] == "remote_fetch_failed"
+    assert bool(row["persisted_locally"]) is False
+    assert int(row["status_code"]) == 404
 
 
 def test_derive_archives_base_url_uses_legacy_settings_when_not_present_on_app_config(tmp_path: Path) -> None:
@@ -199,4 +213,3 @@ def test_proxy_request_fetch_client_is_injectable_wrapper(monkeypatch, tmp_path:
     assert result.ok is True
     assert out.exists()
     assert len(calls) == 1
-

@@ -86,6 +86,7 @@ async def test_get_filing_metadata_returns_merged_index_metadata_when_local_file
     payload = response.json()
     assert payload["accession_number"] == "0000320193-25-000010"
     assert payload["metadata_source"] == "merged_index"
+    assert payload["metadata_surface"] == "sec_archives_full_or_daily_index_merged"
     assert payload["local_content_available"] is False
     assert payload["submission_path"].endswith("edgar/data/320193/0000320193-25-000010.txt")
 
@@ -215,4 +216,3 @@ async def test_api_content_lan_cache_smoke_flow(tmp_path: Path) -> None:
     assert second.status_code == 200
     assert expected_path.exists()
     assert len(fetch_client.calls) == 1
-

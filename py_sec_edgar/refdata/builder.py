@@ -12,9 +12,11 @@ from py_sec_edgar.refdata.schema import (
     ENTITY_ALIASES_COLUMNS,
     ISSUERS_COLUMNS,
     REFERENCE_FILE_MANIFEST_COLUMNS,
+    SEC_SOURCE_SURFACES_COLUMNS,
     SERIES_CLASSES_COLUMNS,
 )
 from py_sec_edgar.refdata.sources import LoadedSources, source_url_for_filename
+from py_sec_edgar.sec_surfaces import sec_surfaces_dataframe
 
 REFDATA_SCHEMA_VERSION = "refdata_v1"
 
@@ -237,6 +239,10 @@ def build_reference_file_manifest(source_paths: Dict[str, Path], ingested_at_utc
     return _ensure_columns(manifest, REFERENCE_FILE_MANIFEST_COLUMNS)
 
 
+def build_sec_source_surfaces() -> pd.DataFrame:
+    return _ensure_columns(sec_surfaces_dataframe(), SEC_SOURCE_SURFACES_COLUMNS)
+
+
 def build_all_tables(sources: LoadedSources) -> Dict[str, pd.DataFrame]:
     source_updated_at = _utc_now()
     issuers = build_issuers(sources, source_updated_at=source_updated_at)
@@ -252,6 +258,7 @@ def build_all_tables(sources: LoadedSources) -> Dict[str, pd.DataFrame]:
         sources.source_paths,
         ingested_at_utc=source_updated_at,
     )
+    sec_source_surfaces = build_sec_source_surfaces()
 
     return {
         "issuers": issuers,
@@ -259,6 +266,7 @@ def build_all_tables(sources: LoadedSources) -> Dict[str, pd.DataFrame]:
         "entity_aliases": entity_aliases,
         "series_classes": series_classes,
         "reference_file_manifest": manifest,
+        "sec_source_surfaces": sec_source_surfaces,
     }
 
 

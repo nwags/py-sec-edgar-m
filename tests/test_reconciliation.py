@@ -18,6 +18,7 @@ from py_sec_edgar.reconciliation import (
     reconciliation_events_path,
     run_reconciliation,
 )
+from py_sec_edgar.resolution_provenance import filing_resolution_provenance_path
 
 
 class FakeFeedClient:
@@ -268,6 +269,12 @@ def test_reconciliation_catch_up_success_uses_incremental_lookup(monkeypatch, tm
     assert result["lookup_update_mode"] == "incremental"
     assert called["incremental"] == 1
     assert called["refresh"] == 0
+    provenance = pd.read_parquet(filing_resolution_provenance_path(config))
+    assert len(provenance.index) == 1
+    row = provenance.iloc[0]
+    assert row["flow"] == "reconciliation"
+    assert row["decision"] == "catch_up_succeeded"
+    assert bool(row["persisted_locally"]) is True
 
 
 def test_reconciliation_catch_up_skips_weak_feed_only_candidates_explicitly(tmp_path: Path) -> None:

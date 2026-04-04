@@ -5,7 +5,9 @@ from pathlib import Path
 
 import click
 from click.core import ParameterSource
+import pandas as pd
 
+from py_sec_edgar.api.service import FilingRetrievalService
 from py_sec_edgar.config import load_config
 from py_sec_edgar.filters import FORM_FAMILY_MAP
 from py_sec_edgar.filing_parties_query import (
@@ -822,6 +824,377 @@ def reconcile_run(
         },
     )
     click.echo(summary)
+
+
+@main.group("augmentations")
+def augmentations_group() -> None:
+    """Reviewer/operator augmentation inspection commands."""
+
+
+def _echo_rows(rows: list[dict[str, object]], *, as_json: bool, empty_message: str) -> None:
+    if as_json:
+        click.echo(json.dumps(rows, sort_keys=True))
+        return
+    if not rows:
+        click.echo(empty_message)
+        return
+    frame = pd.DataFrame(rows)
+    click.echo(frame.to_string(index=False))
+
+
+@augmentations_group.command("events")
+@click.option("--accession-number", "accession_numbers", multiple=True, help="Optional accession filter. Repeatable.")
+@click.option("--submission-id", default=None, help="Optional submission filter.")
+@click.option("--producer-id", default=None, help="Optional producer filter.")
+@click.option("--layer-type", default=None, help="Optional layer filter.")
+@click.option("--event-family", default=None, help="Optional event family filter.")
+@click.option("--event-type", default=None, help="Optional event type filter.")
+@click.option("--event-source", default=None, help="Optional event source filter.")
+@click.option("--warning-code", default=None, help="Optional governance warning code filter.")
+@click.option("--match-status", default=None, help="Optional governance match status filter.")
+@click.option("--to-state", default=None, help="Optional lifecycle to_state filter.")
+@click.option("--event-time-from", default=None, help="Optional event time lower bound.")
+@click.option("--event-time-to", default=None, help="Optional event time upper bound.")
+@click.option("--received-at-from", default=None, help="Backward-compatible alias for --event-time-from.")
+@click.option("--received-at-to", default=None, help="Backward-compatible alias for --event-time-to.")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit API-shaped JSON payload.")
+def augmentations_events(
+    accession_numbers: tuple[str, ...],
+    submission_id: str | None,
+    producer_id: str | None,
+    layer_type: str | None,
+    event_family: str | None,
+    event_type: str | None,
+    event_source: str | None,
+    warning_code: str | None,
+    match_status: str | None,
+    to_state: str | None,
+    event_time_from: str | None,
+    event_time_to: str | None,
+    received_at_from: str | None,
+    received_at_to: str | None,
+    limit: int,
+    as_json: bool,
+) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        rows = service.list_augmentation_events(
+            accession_numbers=list(accession_numbers) or None,
+            submission_id=submission_id,
+            producer_id=producer_id,
+            layer_type=layer_type,
+            event_family=event_family,
+            event_type=event_type,
+            event_source=event_source,
+            warning_code=warning_code,
+            match_status=match_status,
+            to_state=to_state,
+            event_time_from=event_time_from,
+            event_time_to=event_time_to,
+            received_at_from=received_at_from,
+            received_at_to=received_at_to,
+            limit=limit,
+        )
+    except (LookupError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = {"events": rows}
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    _echo_rows(payload["events"], as_json=False, empty_message="No events found.")
+
+
+@augmentations_group.command("filing-events")
+@click.argument("accession_number")
+@click.option("--submission-id", default=None, help="Optional submission filter.")
+@click.option("--producer-id", default=None, help="Optional producer filter.")
+@click.option("--layer-type", default=None, help="Optional layer filter.")
+@click.option("--event-family", default=None, help="Optional event family filter.")
+@click.option("--event-type", default=None, help="Optional event type filter.")
+@click.option("--event-source", default=None, help="Optional event source filter.")
+@click.option("--warning-code", default=None, help="Optional governance warning code filter.")
+@click.option("--match-status", default=None, help="Optional governance match status filter.")
+@click.option("--to-state", default=None, help="Optional lifecycle to_state filter.")
+@click.option("--event-time-from", default=None, help="Optional event time lower bound.")
+@click.option("--event-time-to", default=None, help="Optional event time upper bound.")
+@click.option("--received-at-from", default=None, help="Backward-compatible alias for --event-time-from.")
+@click.option("--received-at-to", default=None, help="Backward-compatible alias for --event-time-to.")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit API-shaped JSON payload.")
+def augmentations_filing_events(
+    accession_number: str,
+    submission_id: str | None,
+    producer_id: str | None,
+    layer_type: str | None,
+    event_family: str | None,
+    event_type: str | None,
+    event_source: str | None,
+    warning_code: str | None,
+    match_status: str | None,
+    to_state: str | None,
+    event_time_from: str | None,
+    event_time_to: str | None,
+    received_at_from: str | None,
+    received_at_to: str | None,
+    limit: int,
+    as_json: bool,
+) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        rows = service.list_augmentation_events(
+            accession_numbers=[accession_number],
+            submission_id=submission_id,
+            producer_id=producer_id,
+            layer_type=layer_type,
+            event_family=event_family,
+            event_type=event_type,
+            event_source=event_source,
+            warning_code=warning_code,
+            match_status=match_status,
+            to_state=to_state,
+            event_time_from=event_time_from,
+            event_time_to=event_time_to,
+            received_at_from=received_at_from,
+            received_at_to=received_at_to,
+            limit=limit,
+        )
+    except (LookupError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = {"events": rows}
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    _echo_rows(payload["events"], as_json=False, empty_message="No events found.")
+
+
+@augmentations_group.command("events-summary")
+@click.option("--accession-number", "accession_numbers", multiple=True, help="Optional accession filter. Repeatable.")
+@click.option("--submission-id", default=None, help="Optional submission filter.")
+@click.option("--producer-id", default=None, help="Optional producer filter.")
+@click.option("--layer-type", default=None, help="Optional layer filter.")
+@click.option("--event-family", default=None, help="Optional event family filter.")
+@click.option("--event-type", default=None, help="Optional event type filter.")
+@click.option("--event-source", default=None, help="Optional event source filter.")
+@click.option("--warning-code", default=None, help="Optional governance warning code filter.")
+@click.option("--match-status", default=None, help="Optional governance match status filter.")
+@click.option("--to-state", default=None, help="Optional lifecycle to_state filter.")
+@click.option("--event-time-from", default=None, help="Optional event time lower bound.")
+@click.option("--event-time-to", default=None, help="Optional event time upper bound.")
+@click.option("--received-at-from", default=None, help="Backward-compatible alias for --event-time-from.")
+@click.option("--received-at-to", default=None, help="Backward-compatible alias for --event-time-to.")
+@click.option("--group-by", "group_by", multiple=True, help="Grouping dimension. Repeatable.")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit API-shaped JSON payload.")
+def augmentations_events_summary(
+    accession_numbers: tuple[str, ...],
+    submission_id: str | None,
+    producer_id: str | None,
+    layer_type: str | None,
+    event_family: str | None,
+    event_type: str | None,
+    event_source: str | None,
+    warning_code: str | None,
+    match_status: str | None,
+    to_state: str | None,
+    event_time_from: str | None,
+    event_time_to: str | None,
+    received_at_from: str | None,
+    received_at_to: str | None,
+    group_by: tuple[str, ...],
+    limit: int,
+    as_json: bool,
+) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        rows = service.summarize_augmentation_events(
+            accession_numbers=list(accession_numbers) or None,
+            submission_id=submission_id,
+            producer_id=producer_id,
+            layer_type=layer_type,
+            event_family=event_family,
+            event_type=event_type,
+            event_source=event_source,
+            warning_code=warning_code,
+            match_status=match_status,
+            to_state=to_state,
+            event_time_from=event_time_from,
+            event_time_to=event_time_to,
+            received_at_from=received_at_from,
+            received_at_to=received_at_to,
+            group_by=list(group_by) or None,
+            limit=limit,
+        )
+    except (LookupError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    payload = {"rows": rows}
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    _echo_rows(payload["rows"], as_json=False, empty_message="No summary rows found.")
+
+
+@augmentations_group.command("submission")
+@click.argument("submission_id")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_submission(submission_id: str, as_json: bool) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        payload = service.get_augmentation_submission_detail(submission_id=submission_id)
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(render_summary_block(f"Submission {submission_id}", payload))
+
+
+@augmentations_group.command("lifecycle-events")
+@click.argument("submission_id")
+@click.option("--limit", type=click.IntRange(min=0), default=50, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_lifecycle_events(submission_id: str, limit: int, as_json: bool) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        rows = service.list_submission_lifecycle_events(submission_id=submission_id, limit=limit)
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    _echo_rows(rows, as_json=as_json, empty_message="No lifecycle events found.")
+
+
+@augmentations_group.command("governance-summary")
+@click.argument("submission_id")
+@click.option("--limit", type=click.IntRange(min=0), default=50, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_governance_summary(submission_id: str, limit: int, as_json: bool) -> None:
+    service = FilingRetrievalService(load_config())
+    rows = service.summarize_governance_events(submission_id=submission_id, limit=limit)
+    _echo_rows(rows, as_json=as_json, empty_message="No governance summary rows found.")
+
+
+@augmentations_group.command("governance-events")
+@click.argument("submission_id")
+@click.option("--limit", type=click.IntRange(min=0), default=50, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_governance_events(submission_id: str, limit: int, as_json: bool) -> None:
+    service = FilingRetrievalService(load_config())
+    rows = service.list_governance_events(submission_id=submission_id, limit=limit)
+    _echo_rows(rows, as_json=as_json, empty_message="No governance events found.")
+
+
+@augmentations_group.command("overlay-impact")
+@click.argument("submission_id")
+@click.option("--accession-number", "accession_numbers", multiple=True, help="Optional accession filter. Repeatable.")
+@click.option("--limit", type=click.IntRange(min=0), default=50, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_overlay_impact(
+    submission_id: str,
+    accession_numbers: tuple[str, ...],
+    limit: int,
+    as_json: bool,
+) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        payload = service.list_submission_overlay_impact(
+            submission_id=submission_id,
+            accession_numbers=list(accession_numbers) or None,
+            limit=limit,
+        )
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(
+        render_summary_block(
+            f"Overlay impact for {submission_id}",
+            {
+                "selection_policy": payload.get("selection_policy"),
+                "affected_accession_count": payload.get("affected_accession_count"),
+                "contributing_accession_count": payload.get("contributing_accession_count"),
+                "non_contributing_accession_count": payload.get("non_contributing_accession_count"),
+            },
+        )
+    )
+    _echo_rows(payload.get("rows", []), as_json=False, empty_message="No overlay impact rows found.")
+
+
+@augmentations_group.command("entity-impact")
+@click.argument("submission_id")
+@click.option("--accession-number", "accession_numbers", multiple=True, help="Optional accession filter. Repeatable.")
+@click.option("--limit", type=click.IntRange(min=0), default=50, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_entity_impact(
+    submission_id: str,
+    accession_numbers: tuple[str, ...],
+    limit: int,
+    as_json: bool,
+) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        payload = service.list_submission_entity_impact(
+            submission_id=submission_id,
+            accession_numbers=list(accession_numbers) or None,
+            limit=limit,
+        )
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(
+        render_summary_block(
+            f"Entity impact for {submission_id}",
+            {
+                "entity_index_present": payload.get("entity_index_present"),
+                "row_count": payload.get("row_count"),
+                "accession_count": payload.get("accession_count"),
+            },
+        )
+    )
+    _echo_rows(payload.get("rows", []), as_json=False, empty_message="No entity impact rows found.")
+
+
+@augmentations_group.command("review-bundle")
+@click.argument("submission_id")
+@click.option("--overlay-limit", type=click.IntRange(min=0), default=50, show_default=True, help="Overlay-impact row cap.")
+@click.option("--entity-limit", type=click.IntRange(min=0), default=50, show_default=True, help="Entity-impact row cap.")
+@click.option("--lifecycle-limit", type=click.IntRange(min=0), default=50, show_default=True, help="Lifecycle-event row cap.")
+@click.option("--governance-limit", type=click.IntRange(min=0), default=50, show_default=True, help="Governance-summary row cap.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def augmentations_review_bundle(
+    submission_id: str,
+    overlay_limit: int,
+    entity_limit: int,
+    lifecycle_limit: int,
+    governance_limit: int,
+    as_json: bool,
+) -> None:
+    service = FilingRetrievalService(load_config())
+    try:
+        payload = service.get_submission_review_bundle(
+            submission_id=submission_id,
+            overlay_limit=overlay_limit,
+            entity_limit=entity_limit,
+            lifecycle_limit=lifecycle_limit,
+            governance_limit=governance_limit,
+        )
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(
+        render_summary_block(
+            f"Review bundle for {submission_id}",
+            {
+                "lifecycle_state": payload["submission"].get("lifecycle_state"),
+                "warning_item_count": payload["submission"].get("warning_item_count"),
+                "overlay_impact_returned_count": payload["overlay_impact"].get("returned_count"),
+                "entity_impact_returned_count": payload["entity_impact"].get("returned_count"),
+            },
+        )
+    )
 
 
 @main.command("backfill")

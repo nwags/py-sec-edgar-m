@@ -39,3 +39,4 @@
 - The all-CIK text file is historically cumulative and includes individuals and funds.
 - Index files remain essential because they let us discover filing candidates across all forms, not just API-covered XBRL-centric submissions.
 - For investment-company series/class data, local loaders should select the newest matching `investment-company-series-class-*.csv` file (prefer highest year token in filename, then latest mtime).
+- Source/surface assumptions should be represented explicitly in normalized authority artifacts (`sec_source_surfaces.parquet`) instead of only in scattered code constants.

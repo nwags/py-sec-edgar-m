@@ -103,3 +103,6 @@ docs/_static/
 snapshot_v*
 .sec_cache/
 .pytest_cache/
+*.parquet
+company_tickers_exchange.json
+cik_tickers.csv

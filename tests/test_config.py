@@ -12,6 +12,7 @@ def test_load_config_defaults(tmp_path: Path) -> None:
     assert config.raw_refdata_root == tmp_path.resolve() / "refdata" / "sec_sources"
     assert config.canonical_raw_refdata_root == get_canonical_raw_refdata_root()
     assert config.normalized_refdata_root == tmp_path.resolve() / "refdata" / "normalized"
+    assert config.augmentation_ingest_api_key is None
 
 
 def test_canonical_raw_refdata_root_is_deterministic_and_cwd_independent(tmp_path: Path, monkeypatch) -> None:
@@ -40,12 +41,14 @@ def test_load_config_path_overrides_from_env(monkeypatch, tmp_path: Path) -> Non
     monkeypatch.setenv("PY_SEC_EDGAR_DOWNLOAD_ROOT", str(download_root))
     monkeypatch.setenv("PY_SEC_EDGAR_NORMALIZED_REFDATA_ROOT", str(normalized_root))
     monkeypatch.setenv("PY_SEC_EDGAR_MERGED_INDEX_PATH", str(merged_path))
+    monkeypatch.setenv("PY_SEC_EDGAR_AUGMENTATION_API_KEY", "secret-key")
 
     config = load_config()
     assert config.project_root == tmp_path.resolve()
     assert config.download_root == download_root.resolve()
     assert config.normalized_refdata_root == normalized_root.resolve()
     assert config.merged_index_path == merged_path.resolve()
+    assert config.augmentation_ingest_api_key == "secret-key"
 
 
 def test_load_config_explicit_root_ignores_env_path_overrides(monkeypatch, tmp_path: Path) -> None:

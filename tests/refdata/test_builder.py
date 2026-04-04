@@ -56,6 +56,7 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
         "entity_aliases",
         "series_classes",
         "reference_file_manifest",
+        "sec_source_surfaces",
     }
     assert set(written.keys()) == expected
     for path in written.values():
@@ -88,6 +89,10 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
     fund_2110 = fund_entities[fund_entities["entity_cik"] == "0000002110"].iloc[0]
     assert fund_2110["entity_name"] == "New Fund"
     assert fund_entities["source_updated_at"].notna().all()
+
+    surfaces = pd.read_parquet(written["sec_source_surfaces"])
+    assert {"provider_id", "surface_id", "supports_content_retrieval", "retrieval_priority"}.issubset(surfaces.columns)
+    assert "sec_archives_submissions" in set(surfaces["surface_id"].astype(str).tolist())
 
 
 def test_refdata_refresh_uses_fallback_raw_sources_when_project_root_raw_is_empty(tmp_path: Path) -> None:

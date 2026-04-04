@@ -58,3 +58,22 @@ REFERENCE_FILE_MANIFEST_COLUMNS = [
     "source_type",
     "schema_version",
 ]
+
+SEC_SOURCE_SURFACES_COLUMNS = [
+    "provider_id",
+    "provider_type",
+    "surface_id",
+    "surface_name",
+    "base_url",
+    "auth_model",
+    "supports_historical_discovery",
+    "supports_recent_discovery",
+    "supports_metadata_resolution",
+    "supports_content_retrieval",
+    "content_fetch_canonical",
+    "metadata_only",
+    "retrieval_priority",
+    "rate_limit_notes",
+    "fair_access_notes",
+    "operational_caveats",
+]

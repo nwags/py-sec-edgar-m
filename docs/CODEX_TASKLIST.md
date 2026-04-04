@@ -85,6 +85,36 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
 - Support optional catch-up warming into canonical mirror paths.
 - Reuse incremental lookup registration after catch-up warming; full lookup refresh fallback only when incremental is unsafe/incomplete.
 
+## Phase 11
+- Add authenticated augmentation sidecar ingestion keyed by canonical accession (`accession_number`).
+- Persist additive augmentation submission metadata and per-item payload rows under normalized refdata artifacts.
+- Keep canonical filing bodies immutable; augmentations are overlay sidecars only.
+- Add optional public augmentation read surface and optional metadata overlay include flag.
+
+## Phase 12
+- Add deterministic resolved overlay selection view over augmentation sidecars while preserving raw history reads.
+- Formalize resolved overlay policy (`latest_per_producer_layer_v1`) with deterministic grouping/tie-break/ordering semantics.
+- Add dedicated resolved overlay API read surface and keep default filing reads canonical and unchanged.
+- Document lightweight entity/temporal sidecar family conventions without introducing rigid ontology or in-repo inference logic.
+
+## Phase 13
+- Add advisory sidecar governance contract registry (`augmentation_family_conventions_v1`) with stable machine-facing warning codes.
+- Persist ingestion-time governance diagnostics to additive audit artifact (`augmentation_governance_events.parquet`) without blocking valid submissions.
+- Extend history/overlay read ergonomics with shared filters (`augmentation_type`, `schema_version`, `received_at_from`, `received_at_to`) and optional submission metadata enrichment.
+- Add submission-oriented read surface (`/filings/{accession_number}/augmentation-submissions`) for reviewer/producer comparison workflows.
+
+## Phase 14
+- Add governance inspection read surfaces (accession-scoped and cross-accession) so governance diagnostics are queryable without parquet inspection.
+- Add cross-accession reviewer submission query surface for producer/layer/time-window workflows.
+- Add append-only submission lifecycle transition events with stable state names (`active`, `superseded`, `withdrawn`, `disabled`).
+- Make resolved overlay selection lifecycle-aware while preserving append-only raw history behavior.
+
+## Phase 15
+- Add derived entity-search index artifact (`augmentation_entity_index.parquet`) backed by lifecycle-aware resolved overlays.
+- Add tolerant entity extraction support for `entity_mentions` and `entity_links` sidecar families.
+- Trigger deterministic synchronous entity-index rebuilds after augmentation ingestion and lifecycle transitions.
+- Add `GET /filings/search` entity-aware filing query surface with optional filing filters and deterministic result ordering.
+
 ## Acceptance criteria
 
 - A user can refresh SEC reference data from official sources.
@@ -369,3 +399,67 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
 - Reconciliation now emits intermediate stage progress (start, merged/feed filtering, row processing, lookup-update stage, end) with catch-up counters and bounded-window hints when available.
 - Preserved output contract: progress remains stderr-only, final `--summary-json` output remains stdout-only.
 - No API/storage/schema layout changes.
+
+## Migration notes (Accession-centered filing-resolution formalization patch)
+
+- Added explicit filing-resolution primitives in a shared module (`py_sec_edgar/filing_resolution.py`) with strict accession validation, canonical filename/path/url helpers, and local-first metadata resolution precedence (`local_lookup_filings` then merged index).
+- Added normalized SEC source/surface registry authority (`sec_source_surfaces.parquet`) from a typed code-backed registry (`py_sec_edgar/sec_surfaces.py`).
+- Unified API/monitor/reconciliation canonical path/url/accession handling around shared filing-resolution helpers, preserving existing exact-accession and lookup update semantics.
+- Added durable cross-flow remote resolution provenance artifact (`filing_resolution_provenance.parquet`) capturing flow, surfaces, decision, remote URL, local path, persistence status, and explicit failure fields.
+
+## Migration notes (Reviewer-governance stabilization + ergonomics patch)
+
+- Added deterministic governance summary API surface: `GET /augmentations/governance-events/summary` grouped by `warning_code`, `family_id`, `match_status`.
+- Added reviewer submission detail/lifecycle inspection reads:
+  - `GET /augmentations/submissions/{submission_id}`
+  - `GET /augmentations/submissions/{submission_id}/lifecycle-events`
+- Extended cross-accession reviewer query filters on `GET /augmentations/submissions` with `submission_id` and `accession_number`.
+- Standardized machine-readable error contracts for governance/lifecycle validation paths with stable codes (`invalid_timestamp`, `invalid_time_range`, `invalid_match_status`, `invalid_lifecycle_state`, `submission_not_found`, `invalid_lifecycle_transition`, `duplicate_lifecycle_state`).
+- Preserved additive-only sidecar semantics and canonical filing immutability:
+  - no canonical filing payload mutation,
+  - no overlay winner-policy changes (`latest_per_producer_layer_v1` unchanged),
+  - no entity-search semantics changes (still lifecycle-aware, resolved-overlay-derived rebuild).
+
+## Migration notes (Operator export + reviewer workflow ergonomics patch)
+
+- Added read-only reviewer/operator submission export surfaces:
+  - `GET /augmentations/submissions/{submission_id}/overlay-impact`
+  - `GET /augmentations/submissions/{submission_id}/entity-impact`
+  - `GET /augmentations/submissions/{submission_id}/review-bundle`
+- Added stable overlay-impact reason-code contract:
+  - `selected`
+  - `lifecycle_ineligible`
+  - `superseded_by_winner`
+  - `no_eligible_rows`
+- Kept export/impact responses bounded by default and deterministic in ordering.
+- Added thin CLI wrappers over shared service authority (`py-sec-edgar augmentations ...`) for reviewer/operator workflows.
+- Preserved invariants:
+  - no canonical filing payload mutation,
+  - no overlay selection redesign,
+  - no lifecycle-state-model redesign,
+  - no entity-index derivation redesign.
+
+## Migration notes (Generalized event/query surface correction patch)
+
+- Corrected the prior governance-centric event API shape and introduced a generalized primary model:
+  - `GET /augmentations/events`
+  - `GET /filings/{accession_number}/events`
+  - `GET /augmentations/events/summary`
+- Added unified logical event adapter over existing append-only artifacts (`augmentation_governance_events.parquet`, `augmentation_submission_lifecycle_events.parquet`) without storage redesign.
+- Standardized deterministic ordering for generalized event reads:
+  1. `event_time DESC`
+  2. `event_family ASC`
+  3. `event_id ASC`
+- Standardized generalized event id contract:
+  - lifecycle: `event_id = lifecycle_event_id`
+  - governance: deterministic composite key `event_time|submission_id|item_index|accession_number|producer_id|layer_type|augmentation_type|schema_version|contract_version_id`
+- Added generalized grouped summary contract with bounded allowed dimensions and deterministic ordering.
+- Kept legacy governance/lifecycle routes as compatibility aliases routed through the generalized adapter (not primary contract).
+- Added primary CLI wrappers:
+  - `py-sec-edgar augmentations events`
+  - `py-sec-edgar augmentations events-summary`
+  - `py-sec-edgar augmentations filing-events <accession_number>`
+- Standardized redesigned/compatibility event error envelope to:
+  - `{"error":{"code":"...","message":"...","details":{...}}}`
+- Explicit correction statement for docs/contracts:
+  - prior governance-specific endpoint emphasis was too narrow and is corrected by the generalized event model in this phase.

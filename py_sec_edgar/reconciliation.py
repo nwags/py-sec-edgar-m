@@ -3,14 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import re
 import time
 from typing import Callable
-from urllib.parse import urljoin
 
 import pandas as pd
 
 from py_sec_edgar.config import AppConfig
+from py_sec_edgar.filing_resolution import (
+    ARCHIVES_CONTENT_SURFACE_ID,
+    canonical_local_submission_path,
+    canonical_submission_url,
+    extract_accession_number,
+    is_canonical_submission_txt_filename,
+    normalize_filename,
+)
 from py_sec_edgar.filters import FORM_FAMILY_MAP
 from py_sec_edgar.lookup import register_local_filings_in_lookup, refresh_local_lookup_indexes
 from py_sec_edgar.monitoring import (
@@ -23,13 +29,13 @@ from py_sec_edgar.monitoring import (
     monitor_feed_url,
 )
 from py_sec_edgar.refdata.normalize import normalize_cik
+from py_sec_edgar.resolution_provenance import append_resolution_provenance_events
+from py_sec_edgar.sec_surfaces import SEC_PROVIDER_ID
 
 
-_DEFAULT_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/"
 _MERGED_REQUIRED_COLUMNS = {"CIK", "Form Type", "Date Filed", "Filename"}
 _MAX_RECONCILIATION_EVENTS_ROWS = 10000
 _MAX_RECONCILIATION_DISCREPANCIES_ROWS = 50000
-_ACCESSION_RE = re.compile(r"(\d{10}-\d{2}-\d{6})")
 
 
 @dataclass(frozen=True)
@@ -206,6 +212,7 @@ def run_reconciliation(
     keys = sorted(set(merged_map.keys()) | set(feed_map.keys()))
     rows: list[dict[str, object]] = []
     events: list[dict[str, object]] = []
+    provenance_events: list[dict[str, object]] = []
     warmer = warm_fetcher or ProxyRequestWarmFetcher()
 
     catch_up_attempted_count = 0
@@ -313,6 +320,31 @@ def run_reconciliation(
                             "error_class": fetch_result.error_class,
                         }
                     )
+
+                provenance_events.append(
+                    {
+                        "event_time": run_time,
+                        "flow": "reconciliation",
+                        "provider_id": SEC_PROVIDER_ID,
+                        "accession_number": combined.accession_number,
+                        "filename": combined.filename,
+                        "filing_cik": combined.filing_cik,
+                        "form_type": combined.form_type,
+                        "filing_date": combined.filing_date,
+                        "metadata_surface": (
+                            "sec_archives_full_or_daily_index_merged" if combined.merged_index_seen else "sec_feed_current_atom"
+                        ),
+                        "content_surface": ARCHIVES_CONTENT_SURFACE_ID,
+                        "decision": "catch_up_succeeded" if (fetch_result.ok and local_present_after) else "catch_up_failed",
+                        "remote_url": resolved_source_url,
+                        "local_path": str(local_path),
+                        "persisted_locally": bool(fetch_result.ok and local_present_after),
+                        "status_code": fetch_result.status_code,
+                        "reason": None if (fetch_result.ok and local_present_after) else (fetch_result.reason or "catch_up_failed"),
+                        "error": None if (fetch_result.ok and local_present_after) else fetch_result.error,
+                        "error_class": None if (fetch_result.ok and local_present_after) else fetch_result.error_class,
+                    }
+                )
         elif catch_up_warm and _is_actionable_discrepancy(discrepancy_type) and not local_present:
             catch_up_skipped = True
             reason = catch_up_skip_reason or "ineligible_for_catch_up"
@@ -548,6 +580,7 @@ def run_reconciliation(
 
     discrepancies_written = _append_discrepancies(discrepancy_path, rows)
     events_written_total = _append_events(events_path, events)
+    append_resolution_provenance_events(config, provenance_events)
 
     discrepancy_counts = pd.Series([row["discrepancy_type"] for row in rows], dtype="object").value_counts(dropna=False).to_dict()
     discrepancy_counts = {str(k): int(v) for k, v in discrepancy_counts.items()}
@@ -735,7 +768,7 @@ def _build_items_from_merged(df: pd.DataFrame) -> list[ReconciliationItem]:
                 form_type=_as_text(row.get("Form Type")),
                 filing_cik=normalize_cik(row.get("CIK")),
                 filename=filename,
-                source_url=urljoin(_DEFAULT_ARCHIVES_BASE_URL, filename),
+                source_url=canonical_submission_url(filename),
                 feed_seen=False,
                 merged_index_seen=True,
             )
@@ -759,7 +792,7 @@ def _build_items_from_feed(candidates: list[MonitorCandidate]) -> list[Reconcili
                 form_type=_as_text(candidate.form_type),
                 filing_cik=normalize_cik(candidate.filing_cik),
                 filename=filename,
-                source_url=_as_text(candidate.url) or (urljoin(_DEFAULT_ARCHIVES_BASE_URL, filename) if filename else None),
+                source_url=_as_text(candidate.url) or canonical_submission_url(filename),
                 feed_seen=True,
                 merged_index_seen=False,
             )
@@ -813,18 +846,11 @@ def _is_actionable_discrepancy(discrepancy_type: str) -> bool:
 
 
 def _canonical_source_url(filename: str | None) -> str | None:
-    normalized = _normalize_filename(filename)
-    if normalized is None:
-        return None
-    return urljoin(_DEFAULT_ARCHIVES_BASE_URL, normalized)
+    return canonical_submission_url(filename)
 
 
 def _is_canonical_txt_filename(filename: str | None) -> bool:
-    normalized = _normalize_filename(filename)
-    if normalized is None:
-        return False
-    lowered = normalized.lower()
-    return lowered.startswith("edgar/data/") and lowered.endswith(".txt")
+    return is_canonical_submission_txt_filename(filename)
 
 
 def _evaluate_catch_up_eligibility(
@@ -861,25 +887,15 @@ def _evaluate_catch_up_eligibility(
 
 
 def _canonical_local_submission_path(config: AppConfig, filename: str | None) -> Path | None:
-    if not filename:
-        return None
-    return config.download_root / Path(filename.lstrip("/"))
+    return canonical_local_submission_path(config, filename)
 
 
 def _normalize_filename(value: object) -> str | None:
-    text = _as_text(value)
-    if text is None:
-        return None
-    return text.lstrip("/")
+    return normalize_filename(value)
 
 
 def _derive_accession_number(filename: str) -> str | None:
-    text = str(filename or "")
-    match = _ACCESSION_RE.search(text)
-    if not match:
-        return None
-    out = str(match.group(1)).strip()
-    return out or None
+    return extract_accession_number(filename)
 
 
 def _append_discrepancies(path: Path, rows: list[dict[str, object]]) -> int:

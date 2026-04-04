@@ -60,6 +60,7 @@ class AppConfig:
     download_workers: int
     extract_workers: int
     forms: List[str]
+    augmentation_ingest_api_key: str | None
 
     @classmethod
     def from_project_root(
@@ -93,6 +94,7 @@ class AppConfig:
             download_workers=4,
             extract_workers=1,
             forms=list(DEFAULT_SPECIAL_SITUATIONS_FORMS),
+            augmentation_ingest_api_key=_str_from_env("PY_SEC_EDGAR_AUGMENTATION_API_KEY"),
         )
 
     def ensure_runtime_dirs(self) -> None:
@@ -127,3 +129,11 @@ def _path_from_env(name: str) -> Path | None:
     if not value:
         return None
     return Path(value).expanduser()
+
+
+def _str_from_env(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    return value or None

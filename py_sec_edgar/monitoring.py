@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 import re
 import time
@@ -13,6 +12,15 @@ import pandas as pd
 
 from py_sec_edgar.config import AppConfig
 from py_sec_edgar.download import ProxyRequest
+from py_sec_edgar.filing_resolution import (
+    ARCHIVES_CONTENT_SURFACE_ID,
+    canonical_local_submission_path,
+    canonical_submission_filename,
+    canonical_submission_url,
+    derive_filename_from_accession_and_cik,
+    extract_accession_number,
+    extract_cik_from_filename,
+)
 from py_sec_edgar.filing import complete_submission_filing
 from py_sec_edgar.filing_parties import (
     SUPPORTED_FORMS,
@@ -23,14 +31,14 @@ from py_sec_edgar.filters import FORM_FAMILY_MAP
 from py_sec_edgar.lookup import refresh_local_lookup_indexes
 from py_sec_edgar.lookup import register_local_filings_in_lookup
 from py_sec_edgar.refdata.normalize import normalize_cik
+from py_sec_edgar.resolution_provenance import append_resolution_provenance_events, now_utc_iso
+from py_sec_edgar.sec_surfaces import SEC_PROVIDER_ID
 
 
 DEFAULT_MONITOR_FEED_URL = (
     "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&count=100&output=atom"
 )
-_DEFAULT_ARCHIVES_BASE_URL = "https://www.sec.gov/Archives/"
 _MAX_EVENTS_ROWS = 10000
-_ACCESSION_RE = re.compile(r"(\d{10}-\d{2}-\d{6})")
 _CIK_RE = re.compile(r"(?:CIK=|CIK:|CIK\\s)(\d{1,10})", re.IGNORECASE)
 
 
@@ -127,7 +135,7 @@ def parse_atom_feed_candidates_detailed(feed_text: str, *, source_id: str) -> Fe
         summary = _non_empty(entry.get("summary")) or ""
         combined = " ".join([title, summary, link or ""])
 
-        accession_number = _extract_accession(combined)
+        accession_number = extract_accession_number(combined)
         filing_cik = normalize_cik(_extract_cik(combined))
         form_type = _extract_form_type(title, summary)
         filing_date = _normalize_date_string(
@@ -135,13 +143,13 @@ def parse_atom_feed_candidates_detailed(feed_text: str, *, source_id: str) -> Fe
         )
         filename = _filename_from_link(link) or _filename_from_text(combined)
         if accession_number is None and filename:
-            accession_number = _extract_accession(filename)
+            accession_number = extract_accession_number(filename)
 
         if filing_cik is None and filename:
-            filing_cik = _extract_cik_from_filename(filename)
+            filing_cik = extract_cik_from_filename(filename)
 
         if filename is None and accession_number and filing_cik:
-            filename = _derive_filename_from_accession_and_cik(accession_number, filing_cik)
+            filename = derive_filename_from_accession_and_cik(accession_number, filing_cik)
 
         if accession_number is None:
             rejected.append(
@@ -171,7 +179,7 @@ def parse_atom_feed_candidates_detailed(feed_text: str, *, source_id: str) -> Fe
             )
             continue
 
-        normalized_filename = _canonical_submission_filename(
+        normalized_filename = canonical_submission_filename(
             filename=filename,
             accession_number=accession_number,
             filing_cik=filing_cik,
@@ -190,7 +198,7 @@ def parse_atom_feed_candidates_detailed(feed_text: str, *, source_id: str) -> Fe
             )
             continue
 
-        canonical_url = urljoin(_DEFAULT_ARCHIVES_BASE_URL, normalized_filename)
+        canonical_url = canonical_submission_url(normalized_filename)
         out.append(
             MonitorCandidate(
                 accession_number=accession_number,
@@ -278,6 +286,7 @@ def run_monitor_poll(
     _emit_monitor_progress(progress_callback, phase="monitor.poll.normalize_feed", counters=counters)
 
     events: list[dict[str, object]] = []
+    provenance_events: list[dict[str, object]] = []
     for rejected_item in rejected:
         events.append(
             {
@@ -458,6 +467,29 @@ def run_monitor_poll(
                         local_submission_present=False,
                         warmed_by_monitor=bool(seen_map.get(accession, {}).get("warmed_by_monitor", False)),
                     )
+
+                provenance_events.append(
+                    {
+                        "event_time": now,
+                        "flow": "monitor",
+                        "provider_id": SEC_PROVIDER_ID,
+                        "accession_number": candidate.accession_number,
+                        "filename": candidate.filename,
+                        "filing_cik": candidate.filing_cik,
+                        "form_type": candidate.form_type,
+                        "filing_date": candidate.filing_date,
+                        "metadata_surface": "sec_feed_current_atom",
+                        "content_surface": ARCHIVES_CONTENT_SURFACE_ID,
+                        "decision": "warm_succeeded" if fetch_result.ok and local_exists_after else "warm_failed",
+                        "remote_url": candidate.url,
+                        "local_path": str(canonical_path),
+                        "persisted_locally": bool(fetch_result.ok and local_exists_after),
+                        "status_code": fetch_result.status_code,
+                        "reason": None if (fetch_result.ok and local_exists_after) else (fetch_result.reason or "warm_failed"),
+                        "error": None if (fetch_result.ok and local_exists_after) else fetch_result.error,
+                        "error_class": None if (fetch_result.ok and local_exists_after) else fetch_result.error_class,
+                    }
+                )
 
         counters["seen_duplicate_count"] = int(seen_duplicate_count)
         counters["skipped_already_local_count"] = int(skipped_already_local_count)
@@ -679,6 +711,7 @@ def run_monitor_poll(
     merged_seen_df.to_parquet(seen_path, index=False)
 
     persisted_events = _append_events(events_out_path, events)
+    append_resolution_provenance_events(config, provenance_events)
 
     _emit_monitor_progress(progress_callback, phase="monitor.poll.complete", counters=counters, detail="completed")
 
@@ -959,14 +992,11 @@ def _load_events_df(path: Path) -> pd.DataFrame:
 
 
 def _canonical_local_submission_path(config: AppConfig, filename: str | None) -> Path | None:
-    if not filename:
-        return None
-    return config.download_root / Path(str(filename).lstrip("/"))
+    return canonical_local_submission_path(config, filename)
 
 
 def _extract_accession(text: str) -> str | None:
-    match = _ACCESSION_RE.search(str(text or ""))
-    return match.group(1) if match else None
+    return extract_accession_number(text)
 
 
 def _extract_cik(text: str) -> str | None:
@@ -1013,18 +1043,11 @@ def _filename_from_text(text: str | None) -> str | None:
 
 
 def _extract_cik_from_filename(filename: str | None) -> str | None:
-    text = _non_empty(filename)
-    if text is None:
-        return None
-    match = re.search(r"edgar/data/(\d{1,10})/", text, re.IGNORECASE)
-    if not match:
-        return None
-    return normalize_cik(match.group(1))
+    return extract_cik_from_filename(filename)
 
 
 def _derive_filename_from_accession_and_cik(accession_number: str, filing_cik: str) -> str:
-    cik_raw = str(int(str(filing_cik))) if str(filing_cik).isdigit() else str(filing_cik).lstrip("0") or "0"
-    return f"edgar/data/{cik_raw}/{accession_number}.txt"
+    return derive_filename_from_accession_and_cik(accession_number, filing_cik)
 
 
 def _canonical_submission_filename(
@@ -1033,19 +1056,11 @@ def _canonical_submission_filename(
     accession_number: str | None,
     filing_cik: str | None,
 ) -> str | None:
-    text = _non_empty(filename)
-    if text is None:
-        return None
-    normalized = text.lstrip("/")
-
-    lower_name = normalized.lower()
-    if lower_name.endswith("-index.htm") or lower_name.endswith("-index.html"):
-        resolved_accession = accession_number or _extract_accession(normalized)
-        resolved_cik = filing_cik or _extract_cik_from_filename(normalized)
-        if resolved_accession and resolved_cik:
-            return _derive_filename_from_accession_and_cik(resolved_accession, resolved_cik)
-
-    return normalized
+    return canonical_submission_filename(
+        filename=filename,
+        accession_number=accession_number,
+        filing_cik=filing_cik,
+    )
 
 
 def _normalize_date_string(value: str | None) -> str | None:
@@ -1066,7 +1081,7 @@ def _non_empty(value: object) -> str | None:
 
 
 def _now_utc_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return now_utc_iso()
 
 
 def monitor_feed_url(config: AppConfig) -> str:
@@ -1084,16 +1099,19 @@ def build_monitor_candidate_from_filename(
     form_type: str | None = None,
     filing_cik: str | None = None,
     source_id: str | None = None,
-    archives_base_url: str = _DEFAULT_ARCHIVES_BASE_URL,
+    archives_base_url: str | None = None,
 ) -> MonitorCandidate:
     normalized_filename = str(filename).lstrip("/")
     accession = accession_number or _extract_accession(normalized_filename) or ""
+    resolved_url = canonical_submission_url(normalized_filename)
+    if archives_base_url:
+        resolved_url = urljoin(archives_base_url, normalized_filename)
     return MonitorCandidate(
         accession_number=accession,
         filing_date=filing_date,
         form_type=form_type,
         filing_cik=normalize_cik(filing_cik),
         filename=normalized_filename,
-        url=urljoin(archives_base_url, normalized_filename),
+        url=resolved_url,
         source_id=source_id,
     )

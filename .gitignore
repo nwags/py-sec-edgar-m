@@ -123,3 +123,4 @@ database.py
 docs/_static/
 .sec_cache/
 snapshot_v*
+.codex
