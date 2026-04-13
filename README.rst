@@ -116,6 +116,63 @@ Runs a one-shot feed poll, filters candidates, warms local cache for new relevan
 
 Runs a bounded polling loop (`--interval-seconds`, `--max-iterations`) for operator-driven monitoring without daemonization.
 
+Wave 1 Canonical Surface (Additive)
+===================================
+
+Wave 1 introduces an additive canonical CLI surface while preserving `py-sec-edgar ...` unchanged for operators:
+
+See also: `docs/WAVE1_MIGRATION_NOTE.md` for a concise Wave 1 canonical/alias/compatibility summary.
+See also: `docs/WAVE2_MIGRATION_NOTE.md` for provider/rate-limit/resolve/API transparency alignment in Wave 2.
+See also: `docs/WAVE3_MIGRATION_NOTE.md` for shared augmentation metadata/contracts alignment in Wave 3.
+See also: `docs/WAVE4_MIGRATION_NOTE.md` for shared seams + read-only producer-protocol alignment in Wave 4.
+See also: `docs/WAVE5_MIGRATION_NOTE.md` for Wave 5/5.1 shared-package extraction + normalization alignment.
+See also: `docs/WAVE7_MIGRATION_NOTE.md` for Wave 7 lifecycle hardening (RC/stable signoff, rollback, deferred cleanup policy).
+See also: `docs/WAVE7_1_MIGRATION_NOTE.md` for Wave 7.1 package-side release-execution hardening (repo participation, blockers, rollback, user-testing start readiness).
+See also: `docs/WAVE7_2_MIGRATION_NOTE.md` for Wave 7.2 minimal companion participation in the first real shared RC cycle.
+
+.. code-block:: console
+
+    m-cache sec refdata refresh
+    m-cache sec lookup refresh
+    m-cache sec lookup query
+    m-cache sec monitor poll
+    m-cache sec monitor loop
+    m-cache sec reconcile run
+    m-cache sec providers list
+    m-cache sec providers show --provider sec
+    m-cache sec resolve filing --accession-number 0000320193-25-000010 --resolution-mode resolve_if_missing
+    m-cache sec aug list-types
+    m-cache sec aug inspect-target --accession-number 0000320193-25-000010
+    m-cache sec aug status --run-id <run_id>
+    m-cache sec aug submit-run --payload-file ./producer_run_submission.json
+    m-cache sec aug submit-artifact --payload-file ./producer_artifact_submission.json
+    m-cache sec aug events
+    m-cache sec aug inspect-runs --accession-number 0000320193-25-000010
+    m-cache sec aug inspect-artifacts --accession-number 0000320193-25-000010
+
+Canonical SEC augmentation family naming in Wave 1:
+
+- canonical: `aug`
+- backward-compatible alias: `augmentations`
+
+Alias discoverability examples:
+
+.. code-block:: console
+
+    py-sec-edgar aug --help
+    py-sec-edgar augmentations --help
+    m-cache sec aug --help
+    m-cache sec augmentations --help
+
+Legacy machine-output compatibility remains the default on `py-sec-edgar ...`.
+If canonical machine output is required from legacy commands, use:
+
+.. code-block:: console
+
+    --output-schema canonical
+
+For `m-cache sec ...` Wave 1 wrappers, canonical summary/progress machine shapes are the default.
+
 API Local-First Retrieval
 =========================
 
@@ -126,6 +183,7 @@ The repository includes an additive FastAPI surface under `py_sec_edgar/api/` on
 - `GET /filings/search`
 - `GET /filings/{accession_number}/content`
 - `GET /filings/{accession_number}/augmentations`
+- `GET /filings/{accession_number}/augmentation-target-descriptor` (read-only producer target descriptor)
 - `GET /filings/{accession_number}/overlay`
 - `GET /filings/{accession_number}/augmentation-submissions`
 - `GET /augmentations/events` (primary generalized event stream)
@@ -146,6 +204,41 @@ Current API behavior is local-first:
 2. serve local cached filing content when present,
 3. on local content miss, fetch filing content from SEC and persist it into the existing cache mirror path under `.sec_cache/Archives/...`,
 4. subsequent requests for that accession are served from local cache.
+
+Wave 2 adds additive resolution transparency metadata on existing endpoints:
+
+- `GET /filings/{accession_number}` includes `resolution_meta` (local-only by default, optional explicit content-resolution probe via query flags).
+- `GET /filings/{accession_number}/content` preserves content/body behavior and now emits additive `X-M-Cache-*` headers for `resolution_mode`, provider selection, remote attempt, served-from, persistence, rate-limit, retries, and reason code.
+
+Wave 3 adds additive augmentation transparency metadata on existing endpoints:
+
+- `GET /filings/{accession_number}` includes `augmentation_meta` (availability, types present, last augmentation timestamp, inspect path).
+- `GET /filings/{accession_number}/content` includes additive `X-M-Cache-Augmentation-*` headers.
+- Existing SEC augmentation artifacts remain the source of truth; `augmentation_runs.parquet` and `augmentation_events.parquet` are additive shared companion metadata.
+- SEC-local `augmentation_artifacts` equivalent remains `augmentation_items.parquet` + `augmentation_submissions.parquet` (with governance/lifecycle/provenance companions), not a second authority file.
+
+Wave 4.1 (this repo pass) keeps producer protocol normalization compatibility-first:
+
+- additive target descriptor exposure for filing text targets,
+- deterministic `source_text_version` and additive `augmentation_stale`,
+- shared seam modules for extractable models/validators/metadata packers/helpers.
+- canonical `m-cache sec aug` family normalization:
+  - `inspect-target`
+  - `status` (narrow single-run read surface)
+  - `submit-run` (validate-only, non-persisting)
+  - `submit-artifact` (validate-only, non-persisting)
+  - `events` (timeline/audit surface)
+- compatibility surfaces retained:
+  - `inspect-runs` (richer run listing/query surface),
+  - `inspect-artifacts` (artifact inspection surface).
+
+This repo is not a first write-path pilot in this pass; no live producer protocol write endpoint/CLI/persistence authority is introduced.
+
+Wave 5 (this repo pass) introduces an in-repo `m_cache_shared` extraction cut for shared models/validators/packers/thin helpers while preserving:
+
+- `py_sec_edgar.wave4_shared` as shim/facade for adoption compatibility,
+- local SEC authority/identity/storage/execution internals,
+- non-pilot validate-only submit behavior and no-dual-authority posture.
 
 The API patch does not replace storage layout or CLI ingestion behavior.
 
@@ -297,6 +390,22 @@ Reconciliation artifacts are stored under the configured normalized root:
 - `reconciliation_discrepancies.parquet`
 - `reconciliation_events.parquet`
 - `filing_resolution_provenance.parquet`
+- `resolution_events.parquet`
+
+Resolution Provenance Artifacts (Wave 1)
+========================================
+
+Wave 1 uses an additive two-artifact strategy for resolution provenance:
+
+- shared canonical artifact: `resolution_events.parquet`
+- SEC-specific companion artifact: `filing_resolution_provenance.parquet`
+
+Contracts in this repo:
+
+- `resolution_events.parquet` is the canonical/shared cross-repo comparison surface for Wave 1 resolution event shape alignment.
+- `filing_resolution_provenance.parquet` remains a sanctioned SEC-specific companion artifact with SEC-operational fields used by existing SEC flows and consumers.
+- Wave 1 does not perform broad historical rewrite/migration of prior provenance rows.
+- The companion artifact is intentional in Wave 1 (not an accidental divergence), while deeper convergence decisions are explicitly deferred to later waves.
 
 Reconciliation is one-shot and operator-oriented:
 

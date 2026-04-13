@@ -1,0 +1,6 @@
+{
+  "repo": "py-sec-edgar-m",
+  "user_testing_required": true,
+  "key_user_flows": "install/upgrade/rollback for compatibility-impacting releases; py-sec-edgar and m-cache sec CLI/API compatibility flows; facade mode checks (local/auto/external)",
+  "release_gate_notes": "cross-application user testing is mandatory only for compatibility-impacting releases; it never replaces maintainer/developer validation or RC matrix validation"
+}

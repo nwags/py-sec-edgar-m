@@ -89,6 +89,8 @@ async def test_get_filing_metadata_returns_merged_index_metadata_when_local_file
     assert payload["metadata_surface"] == "sec_archives_full_or_daily_index_merged"
     assert payload["local_content_available"] is False
     assert payload["submission_path"].endswith("edgar/data/320193/0000320193-25-000010.txt")
+    assert payload["resolution_meta"]["resolution_mode"] == "local_only"
+    assert payload["resolution_meta"]["remote_attempted"] is False
 
 
 @pytest.mark.anyio
@@ -117,6 +119,9 @@ async def test_get_filing_content_returns_local_file(tmp_path: Path) -> None:
         response = await client.get("/filings/0000320193-25-000010/content")
     assert response.status_code == 200
     assert response.text == "local filing payload"
+    assert response.headers["x-m-cache-resolution-mode"] == "resolve_if_missing"
+    assert response.headers["x-m-cache-served-from"] == "local_cache"
+    assert response.headers["x-m-cache-remote-attempted"] == "false"
 
 
 @pytest.mark.anyio
@@ -143,6 +148,8 @@ async def test_get_filing_content_remote_fallback_persists_and_second_call_is_lo
 
     assert first.status_code == 200
     assert first.content == b"persisted from remote"
+    assert first.headers["x-m-cache-remote-attempted"] == "true"
+    assert first.headers["x-m-cache-served-from"] == "remote_then_persisted"
     assert second.status_code == 200
     assert second.content == b"persisted from remote"
     assert len(fetch_client.calls) == 1
@@ -186,6 +193,60 @@ async def test_get_filing_content_remote_fetch_failure_returns_502(tmp_path: Pat
     detail = response.json()["detail"]
     assert detail["reason"] == "http_error"
     assert detail["status_code"] == 404
+    assert detail["resolution_meta"]["resolution_mode"] == "resolve_if_missing"
+    assert detail["resolution_meta"]["remote_attempted"] is True
+
+
+@pytest.mark.anyio
+async def test_get_filing_content_supports_local_only_mode_without_remote_side_effect(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    _write_merged_index(
+        config,
+        [
+            {
+                "CIK": "320193",
+                "Form Type": "SC 13D",
+                "Date Filed": "2025-01-15",
+                "Filename": "edgar/data/320193/0000320193-25-000010.txt",
+            }
+        ],
+    )
+    transport = ASGITransport(app=create_app(config))
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/filings/0000320193-25-000010/content?resolution_mode=local_only")
+
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert detail["resolution_meta"]["resolution_mode"] == "local_only"
+    assert detail["resolution_meta"]["remote_attempted"] is False
+    assert detail["resolution_meta"]["reason_code"] == "local_miss"
+
+
+@pytest.mark.anyio
+async def test_get_filing_metadata_can_request_explicit_content_resolution_meta(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    _write_merged_index(
+        config,
+        [
+            {
+                "CIK": "320193",
+                "Form Type": "SC 13D",
+                "Date Filed": "2025-01-15",
+                "Filename": "edgar/data/320193/0000320193-25-000010.txt",
+            }
+        ],
+    )
+    transport = ASGITransport(app=create_app(config))
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get(
+            "/filings/0000320193-25-000010?resolve_content=true&resolution_mode=local_only"
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["resolution_meta"]["resolution_mode"] == "local_only"
+    assert payload["resolution_meta"]["remote_attempted"] is False
 
 
 @pytest.mark.anyio

@@ -1,0 +1,6 @@
+{
+  "repo": "py-sec-edgar-m",
+  "deferred_items": "env alias removal, flat shim removal, augmentations alias removal, direct-import cleanup, SEC-local externalization, shared public API expansion",
+  "earliest_entry_condition": "after multiple stable cycles, consistently green shared release execution, comprehensive user-testing pass, and high rollback confidence",
+  "notes": "SEC remains conservative for safety-boundary reasons; no cleanup in Wave 7.1"
+}

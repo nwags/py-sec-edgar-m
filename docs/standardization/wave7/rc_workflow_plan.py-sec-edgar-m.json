@@ -1,0 +1,7 @@
+{
+  "repo": "py-sec-edgar-m",
+  "facade_module": "py_sec_edgar.wave4_shared",
+  "rc_validation_role": "conservative consumer/validator signoff only; preserve SEC authority boundaries and non-pilot behavior",
+  "full_test_command": "pytest -q",
+  "evidence_artifact": "docs/standardization/wave7/evidence/RC_SIGNOFF_<tag>.md"
+}

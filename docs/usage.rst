@@ -2,6 +2,15 @@
 Usage
 =====
 
+For a concise Wave 1 migration summary, see ``WAVE1_MIGRATION_NOTE.md``.
+For Wave 2 provider/rate-limit/resolve/API transparency alignment, see ``WAVE2_MIGRATION_NOTE.md``.
+For Wave 3 shared augmentation metadata/contracts alignment, see ``WAVE3_MIGRATION_NOTE.md``.
+For Wave 4 shared seams + read-only producer-protocol alignment, see ``WAVE4_MIGRATION_NOTE.md``.
+For Wave 5/5.1 shared-package extraction and normalization alignment, see ``WAVE5_MIGRATION_NOTE.md``.
+For Wave 7 lifecycle hardening (RC/stable signoff, rollback, deferred cleanup policy), see ``WAVE7_MIGRATION_NOTE.md``.
+For Wave 7.1 package-side release-execution hardening (repo participation, blockers, rollback, user-testing start readiness), see ``WAVE7_1_MIGRATION_NOTE.md``.
+For Wave 7.2 minimal companion participation in the first real shared RC cycle, see ``WAVE7_2_MIGRATION_NOTE.md``.
+
 Refresh normalized SEC reference data:
 
 .. code-block:: console
@@ -210,6 +219,43 @@ SEC source/surface registry authority is written by `refdata refresh`:
 
 - `sec_source_surfaces.parquet`
 
+Wave 2 canonical provider and resolve surfaces (additive):
+
+.. code-block:: console
+
+    m-cache sec providers list
+    m-cache sec providers show --provider sec
+    m-cache sec resolve filing --accession-number 0000320193-25-000010 --resolution-mode resolve_if_missing
+
+Wave 3 canonical additive augmentation metadata/read wrappers:
+
+.. code-block:: console
+
+    m-cache sec aug list-types
+    m-cache sec aug inspect-target --accession-number 0000320193-25-000010
+    m-cache sec aug status --run-id <run_id>
+    m-cache sec aug submit-run --payload-file ./producer_run_submission.json
+    m-cache sec aug submit-artifact --payload-file ./producer_artifact_submission.json
+    m-cache sec aug events
+    m-cache sec aug inspect-runs --accession-number 0000320193-25-000010
+    m-cache sec aug inspect-artifacts --accession-number 0000320193-25-000010
+
+Wave 3 authority rule (SEC): sidecar/submission/provenance artifacts remain authoritative;
+`augmentation_runs.parquet` and `augmentation_events.parquet` are additive shared metadata companions only.
+
+Wave 4.1 command normalization note:
+
+- canonical family: `inspect-target`, `status`, `submit-run`, `submit-artifact`, `events`
+- `status` is a narrow single-run read surface keyed by `run_id` (with `idempotency_key` support when available)
+- `submit-run` and `submit-artifact` are validate-only/non-persisting in this non-pilot repo pass
+- compatibility surfaces remain available: `inspect-runs`, `inspect-artifacts`
+
+Wave 5/5.1 shared-package note:
+
+- first extraction package is in-repo as `m_cache_shared`,
+- `py_sec_edgar.wave4_shared` remains a shim/facade for first-cycle adoption,
+- SEC authority/identity/storage/execution internals remain local.
+
 API local-first retrieval
 -------------------------
 
@@ -248,6 +294,11 @@ Current endpoints:
 - `GET /augmentations/submissions/{submission_id}/review-bundle` (public compact reviewer/operator export bundle)
 - `POST /admin/augmentations/submissions` (authenticated augmentation ingestion)
 - `POST /admin/augmentations/submissions/{submission_id}/lifecycle` (authenticated lifecycle transition)
+
+Wave 2 additive API transparency on existing endpoints:
+
+- `GET /filings/{accession_number}` returns additive `resolution_meta` and supports optional explicit content-resolution probing (`resolve_content=true`, `resolution_mode=...`, optional `provider=...`).
+- `GET /filings/{accession_number}/content` preserves default response shape/status behavior and emits additive `X-M-Cache-*` resolution/provider/rate-limit headers.
 
 Content retrieval contract:
 

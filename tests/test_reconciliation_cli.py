@@ -112,3 +112,31 @@ def test_reconcile_run_keyboard_interrupt_exits_cleanly(monkeypatch) -> None:
     assert result.exit_code != 0
     assert "Interrupted by user." in result.output
     assert "Traceback" not in result.output
+
+
+def test_reconcile_run_summary_json_canonical_schema_is_additive(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: object())
+
+    def fake_run(config, **kwargs):
+        return {
+            "reconciled_row_count": 1,
+            "catch_up_attempted_count": 1,
+            "catch_up_succeeded_count": 1,
+            "catch_up_failed_count": 0,
+            "catch_up_skipped_count": 0,
+            "total_elapsed_seconds": 0.2,
+        }
+
+    monkeypatch.setattr(cli, "run_reconciliation", fake_run)
+    result = runner.invoke(
+        cli.main,
+        ["reconcile", "run", "--summary-json", "--progress-json", "--output-schema", "canonical"],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["domain"] == "sec"
+    assert payload["command_path"] == ["py-sec-edgar", "reconcile", "run"]
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert stderr_lines
+    assert json.loads(stderr_lines[0])["domain"] == "sec"

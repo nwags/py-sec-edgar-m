@@ -43,6 +43,7 @@ from py_sec_edgar.sec_surfaces import SEC_PROVIDER_ID
 
 class RetrievalDecision(str, Enum):
     LOCAL_HIT = "local_hit"
+    LOCAL_MISS = "local_miss"
     REMOTE_FETCHED_AND_PERSISTED = "remote_fetched_and_persisted"
     NOT_FOUND = "not_found"
     REMOTE_FETCH_FAILED = "remote_fetch_failed"
@@ -79,6 +80,22 @@ class RetrievalResult:
     reason: str | None = None
     error: str | None = None
     error_class: str | None = None
+    resolution_mode: str = "resolve_if_missing"
+    provider_requested: str | None = None
+    provider_used: str | None = None
+    served_from: str = "none"
+    remote_attempted: bool = False
+    persisted_locally: bool | None = None
+    success: bool = False
+    reason_code: str | None = None
+    rate_limited: bool = False
+    retry_count: int = 0
+    deferred_until: str | None = None
+    selection_outcome: str | None = None
+    provider_skip_reasons: list[dict[str, object]] | None = None
+
+
+ALLOWED_RESOLUTION_MODES = {"local_only", "resolve_if_missing", "refresh_if_stale"}
 
 
 class FilingFetchClient(Protocol):
@@ -127,6 +144,18 @@ def _record_remote_resolution_provenance(
     reason: str | None = None,
     error: str | None = None,
     error_class: str | None = None,
+    resolution_mode: str = "resolve_if_missing",
+    provider_requested: str | None = None,
+    served_from: str = "none",
+    remote_attempted: bool = False,
+    success: bool = False,
+    retry_count: int = 0,
+    rate_limited: bool = False,
+    deferred_until: str | None = None,
+    selection_outcome: str | None = None,
+    provider_skip_reasons: list[dict[str, object]] | None = None,
+    reason_code: str | None = None,
+    message: str | None = None,
 ) -> None:
     append_resolution_provenance_events(
         config,
@@ -150,6 +179,20 @@ def _record_remote_resolution_provenance(
                 "reason": reason,
                 "error": error,
                 "error_class": error_class,
+                "resolution_mode": resolution_mode,
+                "provider_requested": provider_requested,
+                "provider_used": SEC_PROVIDER_ID,
+                "served_from": served_from,
+                "remote_attempted": bool(remote_attempted),
+                "success": bool(success),
+                "retry_count": int(retry_count),
+                "rate_limited": bool(rate_limited),
+                "deferred": bool(deferred_until),
+                "deferred_until": deferred_until,
+                "selection_outcome": selection_outcome,
+                "provider_skip_reasons": provider_skip_reasons,
+                "reason_code": reason_code or reason,
+                "message": message or error or reason,
             }
         ],
     )
@@ -195,11 +238,35 @@ def retrieve_filing_content_local_first(
     accession_number: str,
     *,
     fetch_client: FilingFetchClient | None = None,
+    resolution_mode: str = "resolve_if_missing",
+    provider_requested: str | None = None,
 ) -> RetrievalResult:
+    resolved_mode = str(resolution_mode or "resolve_if_missing").strip().lower()
+    if resolved_mode not in ALLOWED_RESOLUTION_MODES:
+        raise ValueError(
+            "Unsupported resolution_mode. Expected one of: local_only, resolve_if_missing, refresh_if_stale."
+        )
+    if resolved_mode == "refresh_if_stale":
+        raise ValueError(
+            "resolution_mode=refresh_if_stale is not implemented on this SEC filing path yet."
+        )
+
     parse_accession_number(accession_number)
+    provider_requested = (str(provider_requested).strip() if provider_requested else SEC_PROVIDER_ID)
     metadata = find_filing_metadata(config, accession_number)
     if metadata is None:
-        return RetrievalResult(decision=RetrievalDecision.NOT_FOUND)
+        return RetrievalResult(
+            decision=RetrievalDecision.NOT_FOUND,
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            provider_used=None,
+            served_from="none",
+            remote_attempted=False,
+            persisted_locally=False,
+            success=False,
+            reason_code="local_miss",
+            selection_outcome="failed",
+        )
 
     local_path = resolve_local_submission_path(config, metadata)
     if local_path is not None:
@@ -207,6 +274,51 @@ def retrieve_filing_content_local_first(
             decision=RetrievalDecision.LOCAL_HIT,
             metadata=metadata,
             local_path=local_path,
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            provider_used=None,
+            served_from="local_cache",
+            remote_attempted=False,
+            persisted_locally=True,
+            success=True,
+            reason_code="local_hit",
+            selection_outcome="served_locally",
+        )
+
+    if resolved_mode == "local_only":
+        return RetrievalResult(
+            decision=RetrievalDecision.LOCAL_MISS,
+            metadata=metadata,
+            local_path=resolve_canonical_submission_path(config, metadata),
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            provider_used=None,
+            served_from="none",
+            remote_attempted=False,
+            persisted_locally=False,
+            success=False,
+            reason_code="local_miss",
+            selection_outcome="served_locally",
+        )
+
+    if provider_requested != SEC_PROVIDER_ID:
+        skip = [{"provider_id": provider_requested, "reason_code": "provider_not_configured"}]
+        return RetrievalResult(
+            decision=RetrievalDecision.REMOTE_FETCH_FAILED,
+            metadata=metadata,
+            local_path=resolve_canonical_submission_path(config, metadata),
+            reason="provider_not_configured",
+            error=f"Provider `{provider_requested}` is not configured for SEC filing content resolution.",
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            provider_used=None,
+            served_from="none",
+            remote_attempted=False,
+            persisted_locally=False,
+            success=False,
+            reason_code="provider_not_configured",
+            selection_outcome="policy_denied",
+            provider_skip_reasons=skip,
         )
 
     canonical_path = resolve_canonical_submission_path(config, metadata)
@@ -220,6 +332,13 @@ def retrieve_filing_content_local_first(
             persisted_locally=False,
             reason="missing_filename",
             error="Filing metadata is missing filename required for SEC retrieval.",
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            served_from="none",
+            remote_attempted=False,
+            success=False,
+            selection_outcome="failed",
+            reason_code="provider_not_configured",
         )
         return RetrievalResult(
             decision=RetrievalDecision.REMOTE_FETCH_FAILED,
@@ -227,6 +346,15 @@ def retrieve_filing_content_local_first(
             local_path=canonical_path,
             reason="missing_filename",
             error="Filing metadata is missing filename required for SEC retrieval.",
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            provider_used=SEC_PROVIDER_ID,
+            served_from="none",
+            remote_attempted=False,
+            persisted_locally=False,
+            success=False,
+            reason_code="provider_not_configured",
+            selection_outcome="failed",
         )
 
     remote_url = derive_remote_filing_url(config, metadata.filename)
@@ -241,14 +369,32 @@ def retrieve_filing_content_local_first(
             remote_url=remote_url,
             local_path=canonical_path,
             persisted_locally=True,
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            served_from="remote_then_persisted",
+            remote_attempted=True,
+            success=True,
+            selection_outcome="used_requested_provider",
+            reason_code="remote_fetched",
         )
         return RetrievalResult(
             decision=RetrievalDecision.REMOTE_FETCHED_AND_PERSISTED,
             metadata=metadata,
             local_path=canonical_path,
             remote_url=remote_url,
+            resolution_mode=resolved_mode,
+            provider_requested=provider_requested,
+            provider_used=SEC_PROVIDER_ID,
+            served_from="remote_then_persisted",
+            remote_attempted=True,
+            persisted_locally=True,
+            success=True,
+            reason_code="remote_fetched",
+            selection_outcome="used_requested_provider",
         )
 
+    rate_limited = bool(fetch_result.status_code == 429)
+    reason_code = "quota_limited" if rate_limited else "retry_exhausted"
     _record_remote_resolution_provenance(
         config,
         metadata=metadata,
@@ -260,6 +406,17 @@ def retrieve_filing_content_local_first(
         reason=fetch_result.reason or "remote_fetch_failed",
         error=fetch_result.error,
         error_class=fetch_result.error_class,
+        resolution_mode=resolved_mode,
+        provider_requested=provider_requested,
+        served_from="none",
+        remote_attempted=True,
+        success=False,
+        retry_count=0,
+        rate_limited=rate_limited,
+        deferred_until=None,
+        selection_outcome="failed",
+        reason_code=reason_code,
+        message=fetch_result.error or fetch_result.reason or "remote_fetch_failed",
     )
     return RetrievalResult(
         decision=RetrievalDecision.REMOTE_FETCH_FAILED,
@@ -270,6 +427,16 @@ def retrieve_filing_content_local_first(
         reason=fetch_result.reason or "remote_fetch_failed",
         error=fetch_result.error,
         error_class=fetch_result.error_class,
+        resolution_mode=resolved_mode,
+        provider_requested=provider_requested,
+        provider_used=SEC_PROVIDER_ID,
+        served_from="none",
+        remote_attempted=True,
+        persisted_locally=False,
+        success=False,
+        reason_code=reason_code,
+        rate_limited=rate_limited,
+        selection_outcome="used_requested_provider",
     )
 
 
@@ -287,11 +454,19 @@ class FilingRetrievalService:
     def resolve_local_submission_path(self, metadata: FilingMetadata | None) -> Path | None:
         return resolve_local_submission_path(self._config, metadata)
 
-    def retrieve_filing_content_local_first(self, accession_number: str) -> RetrievalResult:
+    def retrieve_filing_content_local_first(
+        self,
+        accession_number: str,
+        *,
+        resolution_mode: str = "resolve_if_missing",
+        provider_requested: str | None = None,
+    ) -> RetrievalResult:
         return retrieve_filing_content_local_first(
             self._config,
             accession_number,
             fetch_client=self._fetch_client,
+            resolution_mode=resolution_mode,
+            provider_requested=provider_requested,
         )
 
     def list_augmentations_for_accession(

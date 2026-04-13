@@ -1,0 +1,13 @@
+{
+  "candidate_tag": "v0.1.0-rc2",
+  "repo": "py-sec-edgar-m",
+  "release_role": "Consumer Validator/Signoff Contributor",
+  "pin_confirmed": false,
+  "validation_status": "failed",
+  "signoff_state": "block",
+  "blockers": [
+    "pin_not_confirmed"
+  ],
+  "warnings": [],
+  "rollback_ready": false
+}

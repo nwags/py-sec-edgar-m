@@ -4,6 +4,8 @@ from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
 from py_sec_edgar.api.models import (
+    ApiAugmentationMetaResponse,
+    ApiResolutionMetaResponse,
     AugmentationUnifiedEventsResponse,
     AugmentationUnifiedEventsSummaryResponse,
     AugmentationSubmissionDetailResponse,
@@ -21,6 +23,7 @@ from py_sec_edgar.api.models import (
     GovernanceEventsResponse,
     GovernanceSummaryResponse,
     HealthResponse,
+    ProducerTargetDescriptorResponse,
     SubmissionOverlayImpactResponse,
     SubmissionReviewBundleResponse,
     SubmissionLifecycleEventsResponse,
@@ -29,6 +32,8 @@ from py_sec_edgar.api.service import (
     FilingRetrievalService,
     RetrievalDecision,
 )
+from py_sec_edgar.augmentation_wave3 import build_api_augmentation_meta
+from py_sec_edgar.wave4_shared.helpers import build_filing_target_descriptor
 from py_sec_edgar.config import AppConfig, load_config
 
 
@@ -160,6 +165,9 @@ def create_app(
         accession_number: str,
         include_augmentations: bool = Query(default=False),
         augmentation_view: str = Query(default="history"),
+        resolve_content: bool = Query(default=False),
+        resolution_mode: str = Query(default="resolve_if_missing"),
+        provider: str | None = Query(default=None),
     ) -> FilingMetadataResponse:
         try:
             metadata = service.find_filing_metadata(accession_number)
@@ -175,7 +183,43 @@ def create_app(
             )
         local_path = service.resolve_local_submission_path(metadata)
         canonical_path = service.resolve_canonical_submission_path(metadata)
+        resolution_meta = ApiResolutionMetaResponse(
+            resolution_mode="local_only",
+            remote_attempted=False,
+            provider_requested=None,
+            provider_used=None,
+            served_from="local_cache" if local_path is not None else "none",
+            persisted_locally=bool(local_path is not None),
+            rate_limited=False,
+            retry_count=0,
+            deferred_until=None,
+            reason_code="local_hit" if local_path is not None else "local_miss",
+        )
+        if resolve_content:
+            try:
+                resolution = service.retrieve_filing_content_local_first(
+                    accession_number,
+                    resolution_mode=resolution_mode,
+                    provider_requested=provider,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            resolution_meta = ApiResolutionMetaResponse(
+                resolution_mode=resolution.resolution_mode,
+                remote_attempted=resolution.remote_attempted,
+                provider_requested=resolution.provider_requested,
+                provider_used=resolution.provider_used,
+                served_from=resolution.served_from,
+                persisted_locally=resolution.persisted_locally,
+                rate_limited=resolution.rate_limited,
+                retry_count=resolution.retry_count,
+                deferred_until=resolution.deferred_until,
+                reason_code=resolution.reason_code,
+            )
         augmentations = None
+        augmentation_meta = ApiAugmentationMetaResponse(
+            **build_api_augmentation_meta(runtime_config, accession_number)
+        )
         if include_augmentations:
             if augmentation_view == "history":
                 augmentations = service.list_augmentations_for_accession(accession_number)
@@ -198,7 +242,27 @@ def create_app(
             metadata_source=metadata.metadata_source,
             metadata_surface=metadata.metadata_surface,
             augmentations=augmentations,
+            resolution_meta=resolution_meta,
+            augmentation_meta=augmentation_meta,
         )
+
+    @app.get(
+        "/filings/{accession_number}/augmentation-target-descriptor",
+        response_model=ProducerTargetDescriptorResponse,
+        response_model_exclude_none=True,
+    )
+    async def get_augmentation_target_descriptor(accession_number: str) -> ProducerTargetDescriptorResponse:
+        try:
+            metadata = service.find_filing_metadata(accession_number)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if metadata is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Filing metadata was not found in local lookup or merged index metadata.",
+            )
+        payload = build_filing_target_descriptor(runtime_config, accession_number)
+        return ProducerTargetDescriptorResponse(**payload)
 
     @app.get(
         "/filings/{accession_number}/augmentations",
@@ -862,11 +926,60 @@ def create_app(
         return AugmentationSubmissionLifecycleTransitionResponse(**event)
 
     @app.get("/filings/{accession_number}/content")
-    async def get_filing_content(accession_number: str):
+    async def get_filing_content(
+        accession_number: str,
+        resolution_mode: str = Query(default="resolve_if_missing"),
+        provider: str | None = Query(default=None),
+    ):
         try:
-            result = service.retrieve_filing_content_local_first(accession_number)
+            result = service.retrieve_filing_content_local_first(
+                accession_number,
+                resolution_mode=resolution_mode,
+                provider_requested=provider,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        headers = {
+            "X-M-Cache-Resolution-Mode": str(result.resolution_mode),
+            "X-M-Cache-Remote-Attempted": str(bool(result.remote_attempted)).lower(),
+            "X-M-Cache-Provider-Requested": str(result.provider_requested or ""),
+            "X-M-Cache-Provider-Used": str(result.provider_used or ""),
+            "X-M-Cache-Served-From": str(result.served_from),
+            "X-M-Cache-Persisted-Locally": str(bool(result.persisted_locally)).lower(),
+            "X-M-Cache-Rate-Limited": str(bool(result.rate_limited)).lower(),
+            "X-M-Cache-Retry-Count": str(int(result.retry_count)),
+            "X-M-Cache-Deferred-Until": str(result.deferred_until or ""),
+            "X-M-Cache-Reason-Code": str(result.reason_code or ""),
+        }
+        augmentation_meta_payload = (
+            build_api_augmentation_meta(runtime_config, accession_number)
+            if result.metadata is not None
+            else {
+                "augmentation_available": False,
+                "augmentation_types_present": [],
+                "last_augmented_at": None,
+                "augmentation_stale": None,
+                "inspect_path": f"/filings/{accession_number}/augmentations",
+                "source_text_version": None,
+                "target_descriptor": None,
+            }
+        )
+        headers["X-M-Cache-Augmentation-Available"] = str(
+            bool(augmentation_meta_payload.get("augmentation_available"))
+        ).lower()
+        headers["X-M-Cache-Augmentation-Types-Present"] = ",".join(
+            [str(x) for x in augmentation_meta_payload.get("augmentation_types_present") or []]
+        )
+        headers["X-M-Cache-Augmentation-Last-Augmented-At"] = str(
+            augmentation_meta_payload.get("last_augmented_at") or ""
+        )
+        headers["X-M-Cache-Augmentation-Inspect-Path"] = str(
+            augmentation_meta_payload.get("inspect_path") or ""
+        )
+        headers["X-M-Cache-Augmentation-Source-Text-Version"] = str(
+            augmentation_meta_payload.get("source_text_version") or ""
+        )
 
         if result.decision == RetrievalDecision.NOT_FOUND:
             raise HTTPException(
@@ -875,12 +988,39 @@ def create_app(
                     "Filing was not found in local lookup/index metadata for this API instance."
                 ),
             )
+        if result.decision == RetrievalDecision.LOCAL_MISS:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "message": "Local-only resolution did not find filing content in cache.",
+                    "reason": result.reason or "local_miss",
+                    "status_code": result.status_code,
+                    "error": result.error,
+                    "error_class": result.error_class,
+                    "remote_url": result.remote_url,
+                    "local_path": str(result.local_path) if result.local_path is not None else None,
+                    "resolution_meta": {
+                        "resolution_mode": result.resolution_mode,
+                        "remote_attempted": result.remote_attempted,
+                        "provider_requested": result.provider_requested,
+                        "provider_used": result.provider_used,
+                        "served_from": result.served_from,
+                        "persisted_locally": result.persisted_locally,
+                        "rate_limited": result.rate_limited,
+                        "retry_count": result.retry_count,
+                        "deferred_until": result.deferred_until,
+                        "reason_code": result.reason_code,
+                    },
+                    "augmentation_meta": augmentation_meta_payload,
+                },
+                headers=headers,
+            )
         if result.decision in {
             RetrievalDecision.LOCAL_HIT,
             RetrievalDecision.REMOTE_FETCHED_AND_PERSISTED,
         } and result.local_path is not None:
             data = result.local_path.read_bytes()
-            return Response(content=data, media_type="text/plain")
+            return Response(content=data, media_type="text/plain", headers=headers)
         if result.decision == RetrievalDecision.REMOTE_FETCH_FAILED:
             raise HTTPException(
                 status_code=502,
@@ -892,7 +1032,21 @@ def create_app(
                     "error_class": result.error_class,
                     "remote_url": result.remote_url,
                     "local_path": str(result.local_path) if result.local_path is not None else None,
+                    "resolution_meta": {
+                        "resolution_mode": result.resolution_mode,
+                        "remote_attempted": result.remote_attempted,
+                        "provider_requested": result.provider_requested,
+                        "provider_used": result.provider_used,
+                        "served_from": result.served_from,
+                        "persisted_locally": result.persisted_locally,
+                        "rate_limited": result.rate_limited,
+                        "retry_count": result.retry_count,
+                        "deferred_until": result.deferred_until,
+                        "reason_code": result.reason_code,
+                    },
+                    "augmentation_meta": augmentation_meta_payload,
                 },
+                headers=headers,
             )
         raise HTTPException(
             status_code=500,

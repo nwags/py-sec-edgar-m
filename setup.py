@@ -3,6 +3,8 @@
 
 """The setup script."""
 
+from pathlib import Path
+
 from setuptools import setup, find_packages
 
 with open('README.rst') as readme_file:
@@ -28,6 +30,23 @@ requirements = ['beautifulsoup4',
                 'pyarrow',
                 'uvicorn>=0.30,<1']
 
+
+def _load_requirements_file(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    entries: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        entries.append(line)
+    return entries
+
+
+external_shared_requirements = _load_requirements_file(
+    Path("requirements") / "m_cache_shared_external.txt"
+)
+
 setup_requirements = ['pytest-runner', ]
 
 test_requirements = ['pytest', ]
@@ -51,15 +70,19 @@ setup(
     entry_points={
         'console_scripts': [
             'py-sec-edgar=py_sec_edgar.cli:main',
+            'm-cache=py_sec_edgar.cli:m_cache_main',
         ],
     },
     install_requires=requirements,
+    extras_require={
+        "external-shared": external_shared_requirements,
+    },
     license="MIT license",
     long_description=readme + '\n\n' + history,
     include_package_data=True,
     keywords='py-sec-edgar',
     name='py-sec-edgar',
-    packages=find_packages(include=['py_sec_edgar', 'py_sec_edgar.*']),
+    packages=find_packages(include=['py_sec_edgar', 'py_sec_edgar.*', 'm_cache_shared', 'm_cache_shared.*']),
     setup_requires=setup_requirements,
     test_suite='tests',
     tests_require=test_requirements,

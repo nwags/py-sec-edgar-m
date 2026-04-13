@@ -184,6 +184,56 @@ def test_retrieve_filing_content_remote_fetch_failure_returns_explicit_failure(t
     assert int(row["status_code"]) == 404
 
 
+def test_retrieve_filing_content_local_only_miss_is_explicit(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    _write_merged_index(
+        config,
+        [
+            {
+                "CIK": "320193",
+                "Form Type": "SC 13D",
+                "Date Filed": "2025-01-15",
+                "Filename": "edgar/data/320193/0000320193-25-000010.txt",
+            }
+        ],
+    )
+
+    result = retrieve_filing_content_local_first(
+        config,
+        "0000320193-25-000010",
+        resolution_mode="local_only",
+    )
+    assert result.decision == RetrievalDecision.LOCAL_MISS
+    assert result.remote_attempted is False
+    assert result.reason_code == "local_miss"
+
+
+def test_retrieve_filing_content_provider_not_configured_is_explicit(tmp_path: Path) -> None:
+    config = load_config(tmp_path)
+    _write_merged_index(
+        config,
+        [
+            {
+                "CIK": "320193",
+                "Form Type": "SC 13D",
+                "Date Filed": "2025-01-15",
+                "Filename": "edgar/data/320193/0000320193-25-000010.txt",
+            }
+        ],
+    )
+
+    result = retrieve_filing_content_local_first(
+        config,
+        "0000320193-25-000010",
+        resolution_mode="resolve_if_missing",
+        provider_requested="other_provider",
+    )
+    assert result.decision == RetrievalDecision.REMOTE_FETCH_FAILED
+    assert result.remote_attempted is False
+    assert result.reason_code == "provider_not_configured"
+    assert result.selection_outcome == "policy_denied"
+
+
 def test_derive_archives_base_url_uses_legacy_settings_when_not_present_on_app_config(tmp_path: Path) -> None:
     config = load_config(tmp_path)
     assert derive_archives_base_url(config) == "https://www.sec.gov/Archives/"

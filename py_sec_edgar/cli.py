@@ -2,12 +2,26 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import time
+import tomllib
 
 import click
 from click.core import ParameterSource
 import pandas as pd
 
+from m_cache_shared.cli_helpers import load_json_object_input
+from m_cache_shared.packers import build_run_status_view
 from py_sec_edgar.api.service import FilingRetrievalService
+from py_sec_edgar.augmentation_wave3 import (
+    SHARED_AUGMENTATION_TYPES,
+    build_api_augmentation_meta,
+    list_shared_augmentation_artifacts,
+    load_shared_augmentation_events,
+    load_shared_augmentation_runs,
+    map_to_shared_augmentation_type,
+    materialize_shared_augmentation_metadata,
+)
+from py_sec_edgar.canonical_output import build_canonical_summary, counters_from_result, utc_now_iso
 from py_sec_edgar.config import load_config
 from py_sec_edgar.filters import FORM_FAMILY_MAP
 from py_sec_edgar.filing_parties_query import (
@@ -17,6 +31,8 @@ from py_sec_edgar.filing_parties_query import (
     query_filing_parties,
 )
 from py_sec_edgar.logging_utils import configure_logging
+from py_sec_edgar.m_cache_config import effective_config_to_app_config, load_m_cache_effective_config
+from py_sec_edgar.provider_ops import effective_provider_cfg, list_providers, show_provider
 from py_sec_edgar.lookup import (
     apply_limit_and_columns as apply_lookup_limit_and_columns,
     load_lookup_dataframe,
@@ -35,6 +51,11 @@ from py_sec_edgar.runtime_output import (
     bounded_recent_activity,
     render_activity_block,
     render_summary_block,
+)
+from py_sec_edgar.wave4_shared.helpers import deterministic_source_text_version
+from py_sec_edgar.wave4_shared.validators import (
+    validate_producer_artifact_submission,
+    validate_producer_run_submission,
 )
 
 
@@ -284,19 +305,32 @@ def lookup_group() -> None:
     show_default=True,
     help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
 )
+@click.option(
+    "--output-schema",
+    type=click.Choice(["legacy", "canonical"], case_sensitive=False),
+    default="legacy",
+    show_default=True,
+    help="Summary/progress schema for machine outputs.",
+)
 def lookup_refresh(
     include_global_filings: bool,
     summary_json: bool,
     progress_json: bool,
     progress_heartbeat_seconds: float,
+    output_schema: str,
 ) -> None:
+    output_schema = output_schema.lower()
     config = load_config()
     machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
     progress = ProgressHeartbeat(
         enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="lookup.refresh",
         machine_json=machine_progress,
         machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema=output_schema,
+        domain="sec" if output_schema == "canonical" else None,
+        command_path=["py-sec-edgar", "lookup", "refresh"] if output_schema == "canonical" else None,
     )
     try:
         with progress:
@@ -327,7 +361,36 @@ def lookup_refresh(
         raise click.ClickException("Interrupted by user.") from exc
 
     if summary_json:
-        click.echo(json.dumps(result, sort_keys=True))
+        if output_schema == "canonical":
+            finished_at = utc_now_iso()
+            counters = counters_from_result(
+                result,
+                key_map={
+                    "placement_row_count": "candidate_count",
+                    "local_placement_row_count": "attempted_count",
+                    "filings_row_count": "succeeded_count",
+                    "artifacts_row_count": "persisted_count",
+                },
+            )
+            payload = build_canonical_summary(
+                status="ok",
+                domain="sec",
+                command_path=["py-sec-edgar", "lookup", "refresh"],
+                started_at=started_at,
+                finished_at=finished_at,
+                elapsed_seconds=float(result.get("elapsed_seconds", 0.0)),
+                resolution_mode=None,
+                remote_attempted=False,
+                provider_requested=None,
+                provider_used=None,
+                rate_limited=False,
+                retry_count=0,
+                persisted_locally=True,
+                counters=counters,
+            )
+            click.echo(json.dumps(payload, sort_keys=True))
+        else:
+            click.echo(json.dumps(result, sort_keys=True))
         return
 
     summary = render_summary_block(
@@ -512,6 +575,13 @@ def monitor_group() -> None:
     show_default=True,
     help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
 )
+@click.option(
+    "--output-schema",
+    type=click.Choice(["legacy", "canonical"], case_sensitive=False),
+    default="legacy",
+    show_default=True,
+    help="Summary/progress schema for machine outputs.",
+)
 def monitor_poll(
     warm: bool,
     form_types: tuple[str, ...],
@@ -526,14 +596,20 @@ def monitor_poll(
     summary_json: bool,
     progress_json: bool,
     progress_heartbeat_seconds: float,
+    output_schema: str,
 ) -> None:
+    output_schema = output_schema.lower()
     config = load_config()
     machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
     progress = ProgressHeartbeat(
         enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="monitor.poll",
         machine_json=machine_progress,
         machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema=output_schema,
+        domain="sec" if output_schema == "canonical" else None,
+        command_path=["py-sec-edgar", "monitor", "poll"] if output_schema == "canonical" else None,
     )
     try:
         with progress:
@@ -567,7 +643,36 @@ def monitor_poll(
         raise click.ClickException("Interrupted by user.") from exc
 
     if summary_json:
-        click.echo(json.dumps(result, sort_keys=True))
+        if output_schema == "canonical":
+            finished_at = utc_now_iso()
+            counters = counters_from_result(
+                result,
+                key_map={
+                    "detected_candidate_count": "candidate_count",
+                    "warm_attempted_count": "attempted_count",
+                    "warm_succeeded_count": "succeeded_count",
+                    "warm_failed_count": "failed_count",
+                },
+            )
+            payload = build_canonical_summary(
+                status="ok",
+                domain="sec",
+                command_path=["py-sec-edgar", "monitor", "poll"],
+                started_at=started_at,
+                finished_at=finished_at,
+                elapsed_seconds=float(result.get("total_elapsed_seconds", 0.0)),
+                resolution_mode=None,
+                remote_attempted=bool(result.get("warm_attempted_count", 0)),
+                provider_requested="sec",
+                provider_used="sec",
+                rate_limited=False,
+                retry_count=0,
+                persisted_locally=bool(result.get("warm_succeeded_count", 0)),
+                counters=counters,
+            )
+            click.echo(json.dumps(payload, sort_keys=True))
+        else:
+            click.echo(json.dumps(result, sort_keys=True))
         return
 
     summary = render_summary_block(
@@ -750,6 +855,13 @@ def reconcile_group() -> None:
     show_default=True,
     help="Emit machine liveness heartbeat events to stderr only when idle for this many seconds (0 disables).",
 )
+@click.option(
+    "--output-schema",
+    type=click.Choice(["legacy", "canonical"], case_sensitive=False),
+    default="legacy",
+    show_default=True,
+    help="Summary/progress schema for machine outputs.",
+)
 def reconcile_run(
     recent_days: int | None,
     date_from: str | None,
@@ -762,14 +874,20 @@ def reconcile_run(
     summary_json: bool,
     progress_json: bool,
     progress_heartbeat_seconds: float,
+    output_schema: str,
 ) -> None:
+    output_schema = output_schema.lower()
     config = load_config()
     machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
     progress = ProgressHeartbeat(
         enabled=machine_progress or progress_enabled(summary_json=summary_json),
         phase="reconcile.run",
         machine_json=machine_progress,
         machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema=output_schema,
+        domain="sec" if output_schema == "canonical" else None,
+        command_path=["py-sec-edgar", "reconcile", "run"] if output_schema == "canonical" else None,
     )
     try:
         with progress:
@@ -801,7 +919,38 @@ def reconcile_run(
         raise click.ClickException("Interrupted by user.") from exc
 
     if summary_json:
-        click.echo(json.dumps(result, sort_keys=True))
+        if output_schema == "canonical":
+            finished_at = utc_now_iso()
+            counters = counters_from_result(
+                result,
+                key_map={
+                    "reconciled_row_count": "candidate_count",
+                    "catch_up_attempted_count": "attempted_count",
+                    "catch_up_succeeded_count": "succeeded_count",
+                    "catch_up_failed_count": "failed_count",
+                    "catch_up_skipped_count": "skipped_count",
+                },
+            )
+            counters["discrepancy_count"] = int(result.get("reconciled_row_count", 0))
+            payload = build_canonical_summary(
+                status="ok",
+                domain="sec",
+                command_path=["py-sec-edgar", "reconcile", "run"],
+                started_at=started_at,
+                finished_at=finished_at,
+                elapsed_seconds=float(result.get("total_elapsed_seconds", 0.0)),
+                resolution_mode=None,
+                remote_attempted=bool(result.get("catch_up_attempted_count", 0)),
+                provider_requested="sec",
+                provider_used="sec",
+                rate_limited=False,
+                retry_count=0,
+                persisted_locally=bool(result.get("catch_up_succeeded_count", 0)),
+                counters=counters,
+            )
+            click.echo(json.dumps(payload, sort_keys=True))
+        else:
+            click.echo(json.dumps(result, sort_keys=True))
         return
 
     summary = render_summary_block(
@@ -831,6 +980,11 @@ def augmentations_group() -> None:
     """Reviewer/operator augmentation inspection commands."""
 
 
+@main.group("aug")
+def aug_group() -> None:
+    """Canonical short-name alias for augmentation commands."""
+
+
 def _echo_rows(rows: list[dict[str, object]], *, as_json: bool, empty_message: str) -> None:
     if as_json:
         click.echo(json.dumps(rows, sort_keys=True))
@@ -840,6 +994,17 @@ def _echo_rows(rows: list[dict[str, object]], *, as_json: bool, empty_message: s
         return
     frame = pd.DataFrame(rows)
     click.echo(frame.to_string(index=False))
+
+
+def _load_aug_payload_or_fail(
+    *,
+    payload_json: str | None,
+    payload_file: Path | None,
+) -> dict[str, object]:
+    try:
+        return load_json_object_input(payload_json=payload_json, payload_file=payload_file)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
 
 
 @augmentations_group.command("events")
@@ -1197,6 +1362,10 @@ def augmentations_review_bundle(
     )
 
 
+for _command_name, _command in augmentations_group.commands.items():
+    aug_group.add_command(_command, _command_name)
+
+
 @main.command("backfill")
 @click.pass_context
 @click.option(
@@ -1392,6 +1561,1051 @@ def backfill(
     persist_path = result.get("filing_party_persist_path")
     if persist_path:
         click.echo(f"- filing_party_persist_path: {persist_path}")
+
+
+@click.group("m-cache")
+def m_cache_main() -> None:
+    """Canonical shared command surface."""
+
+
+@m_cache_main.group("sec")
+@click.option(
+    "--config",
+    "config_path",
+    type=click.Path(path_type=Path, dir_okay=False, file_okay=True),
+    default=None,
+    help="Path to m-cache.toml.",
+)
+@click.pass_context
+def m_cache_sec_group(ctx: click.Context, config_path: Path | None) -> None:
+    try:
+        effective = load_m_cache_effective_config(config_path=config_path)
+        runtime_config = effective_config_to_app_config(effective)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    ctx.ensure_object(dict)
+    ctx.obj["m_cache_effective_config"] = effective
+    ctx.obj["m_cache_runtime_config"] = runtime_config
+
+
+def _m_cache_runtime_config(ctx: click.Context):
+    cfg = (ctx.obj or {}).get("m_cache_runtime_config")
+    if cfg is None:
+        raise click.ClickException("m-cache sec runtime config was not initialized.")
+    return cfg
+
+
+def _m_cache_effective_config(ctx: click.Context):
+    cfg = (ctx.obj or {}).get("m_cache_effective_config")
+    if cfg is None:
+        raise click.ClickException("m-cache sec effective config was not initialized.")
+    return cfg
+
+
+@m_cache_sec_group.group("refdata")
+def m_cache_refdata_group() -> None:
+    """Reference-data operations."""
+
+
+@m_cache_refdata_group.command("refresh")
+@click.pass_context
+@click.option("--summary-json/--no-summary-json", default=True, show_default=True, help="Emit canonical summary JSON to stdout.")
+@click.option("--progress-json/--no-progress-json", default=True, show_default=True, help="Emit canonical NDJSON progress events to stderr.")
+@click.option(
+    "--progress-heartbeat-seconds",
+    type=click.FloatRange(min=0.0),
+    default=0.0,
+    show_default=True,
+    help="Emit machine liveness heartbeat events when idle for this many seconds (0 disables).",
+)
+def m_cache_refdata_refresh(
+    ctx: click.Context,
+    summary_json: bool,
+    progress_json: bool,
+    progress_heartbeat_seconds: float,
+) -> None:
+    started_at = utc_now_iso()
+    started_mono = time.monotonic()
+    config = _m_cache_runtime_config(ctx)
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
+    progress = ProgressHeartbeat(
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
+        phase="refdata.refresh",
+        machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema="canonical",
+        domain="sec",
+        command_path=["m-cache", "sec", "refdata", "refresh"],
+    )
+    try:
+        with progress:
+            result = run_refdata_refresh(config)
+            progress.set_counters(artifact_count=int(result.get("artifact_count", 0)))
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if summary_json:
+        payload = build_canonical_summary(
+            status="ok",
+            domain="sec",
+            command_path=["m-cache", "sec", "refdata", "refresh"],
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_seconds=float(result.get("elapsed_seconds", round(time.monotonic() - started_mono, 3))),
+            resolution_mode=None,
+            remote_attempted=False,
+            provider_requested=None,
+            provider_used=None,
+            rate_limited=False,
+            retry_count=0,
+            persisted_locally=True,
+            counters={"persisted_count": int(result.get("artifact_count", 0))},
+        )
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+
+    click.echo("m-cache sec refdata refresh complete.")
+
+
+@m_cache_sec_group.group("lookup")
+def m_cache_lookup_group() -> None:
+    """Lookup operations."""
+
+
+@m_cache_lookup_group.command("refresh")
+@click.pass_context
+@click.option("--include-global-filings/--no-include-global-filings", default=False, show_default=True)
+@click.option("--summary-json/--no-summary-json", default=True, show_default=True, help="Emit canonical summary JSON to stdout.")
+@click.option("--progress-json/--no-progress-json", default=True, show_default=True, help="Emit canonical NDJSON progress events to stderr.")
+@click.option(
+    "--progress-heartbeat-seconds",
+    type=click.FloatRange(min=0.0),
+    default=0.0,
+    show_default=True,
+    help="Emit machine liveness heartbeat events when idle for this many seconds (0 disables).",
+)
+def m_cache_lookup_refresh(
+    ctx: click.Context,
+    include_global_filings: bool,
+    summary_json: bool,
+    progress_json: bool,
+    progress_heartbeat_seconds: float,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
+    progress = ProgressHeartbeat(
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
+        phase="lookup.refresh",
+        machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema="canonical",
+        domain="sec",
+        command_path=["m-cache", "sec", "lookup", "refresh"],
+    )
+    try:
+        with progress:
+            result = refresh_local_lookup_indexes(
+                config,
+                include_global_filings=include_global_filings,
+                progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
+            )
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if summary_json:
+        counters = counters_from_result(
+            result,
+            key_map={
+                "placement_row_count": "candidate_count",
+                "local_placement_row_count": "attempted_count",
+                "filings_row_count": "succeeded_count",
+                "artifacts_row_count": "persisted_count",
+            },
+        )
+        payload = build_canonical_summary(
+            status="ok",
+            domain="sec",
+            command_path=["m-cache", "sec", "lookup", "refresh"],
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_seconds=float(result.get("elapsed_seconds", 0.0)),
+            resolution_mode=None,
+            remote_attempted=False,
+            provider_requested=None,
+            provider_used=None,
+            rate_limited=False,
+            retry_count=0,
+            persisted_locally=True,
+            counters=counters,
+        )
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+
+    click.echo("m-cache sec lookup refresh complete.")
+
+
+@m_cache_lookup_group.command("query")
+@click.pass_context
+@click.option(
+    "--scope",
+    type=click.Choice(["filings", "artifacts"], case_sensitive=False),
+    default="filings",
+    show_default=True,
+)
+@click.option("--accession-number", "accession_numbers", multiple=True)
+@click.option("--cik", "ciks", multiple=True)
+@click.option("--form-type", "form_types", multiple=True)
+@click.option("--date-from", default=None)
+@click.option("--date-to", default=None)
+@click.option("--artifact-type", "artifact_types", multiple=True)
+@click.option("--path-contains", default=None)
+@click.option("--all", "all_filings", is_flag=True, default=False)
+@click.option("--limit", type=click.IntRange(min=0), default=None)
+@click.option("--columns", default=None)
+@click.option("--json", "as_json", is_flag=True, default=True)
+def m_cache_lookup_query(
+    ctx: click.Context,
+    scope: str,
+    accession_numbers: tuple[str, ...],
+    ciks: tuple[str, ...],
+    form_types: tuple[str, ...],
+    date_from: str | None,
+    date_to: str | None,
+    artifact_types: tuple[str, ...],
+    path_contains: str | None,
+    all_filings: bool,
+    limit: int | None,
+    columns: str | None,
+    as_json: bool,
+) -> None:
+    if scope.lower() == "artifacts" and all_filings:
+        raise click.ClickException("`--all` is only supported for `--scope filings`.")
+    config = _m_cache_runtime_config(ctx)
+    try:
+        df = load_lookup_dataframe(config, scope=scope.lower(), use_global_filings=all_filings)
+    except FileNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    filtered = query_lookup(
+        df,
+        scope=scope.lower(),
+        accession_numbers=list(accession_numbers) or None,
+        ciks=list(ciks) or None,
+        form_types=list(form_types) or None,
+        date_from=date_from,
+        date_to=date_to,
+        artifact_types=list(artifact_types) or None,
+        path_contains=path_contains,
+    )
+    selected_columns = parse_lookup_columns_option(columns)
+    try:
+        filtered = apply_lookup_limit_and_columns(filtered, limit=limit, columns=selected_columns)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(filtered.to_dict(orient="records"), sort_keys=True))
+        return
+    click.echo(filtered.to_string(index=False) if not filtered.empty else "No lookup rows matched.")
+
+
+@m_cache_sec_group.group("monitor")
+def m_cache_monitor_group() -> None:
+    """Feed-driven monitor operations."""
+
+
+@m_cache_monitor_group.command("poll")
+@click.pass_context
+@click.option("--warm/--no-warm", default=True, show_default=True)
+@click.option("--form-type", "form_types", multiple=True)
+@click.option("--form-family", "form_families", type=click.Choice(sorted(FORM_FAMILY_MAP.keys()), case_sensitive=False), multiple=True)
+@click.option("--issuer-cik", "issuer_ciks", multiple=True)
+@click.option("--entity-cik", "entity_ciks", multiple=True)
+@click.option("--date-from", default=None)
+@click.option("--date-to", default=None)
+@click.option("--execute-extraction/--no-execute-extraction", default=False, show_default=True)
+@click.option("--persist-filing-parties/--no-persist-filing-parties", default=False, show_default=True)
+@click.option("--refresh-lookup/--no-refresh-lookup", default=True, show_default=True)
+@click.option("--summary-json/--no-summary-json", default=True, show_default=True)
+@click.option("--progress-json/--no-progress-json", default=True, show_default=True)
+@click.option("--progress-heartbeat-seconds", type=click.FloatRange(min=0.0), default=0.0, show_default=True)
+def m_cache_monitor_poll(
+    ctx: click.Context,
+    warm: bool,
+    form_types: tuple[str, ...],
+    form_families: tuple[str, ...],
+    issuer_ciks: tuple[str, ...],
+    entity_ciks: tuple[str, ...],
+    date_from: str | None,
+    date_to: str | None,
+    execute_extraction: bool,
+    persist_filing_parties: bool,
+    refresh_lookup: bool,
+    summary_json: bool,
+    progress_json: bool,
+    progress_heartbeat_seconds: float,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
+    progress = ProgressHeartbeat(
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
+        phase="monitor.poll",
+        machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema="canonical",
+        domain="sec",
+        command_path=["m-cache", "sec", "monitor", "poll"],
+    )
+    with progress:
+        result = run_monitor_poll(
+            config,
+            warm=warm,
+            form_types=list(form_types) or None,
+            form_families=[value.lower() for value in form_families] or None,
+            issuer_ciks=list(issuer_ciks) or None,
+            entity_ciks=list(entity_ciks) or None,
+            date_from=date_from,
+            date_to=date_to,
+            execute_extraction=execute_extraction,
+            persist_filing_parties=persist_filing_parties,
+            refresh_lookup=refresh_lookup,
+            progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
+        )
+        progress.emit_event(
+            phase="monitor.poll.result",
+            counters={
+                "attempted_count": int(result.get("warm_attempted_count", 0)),
+                "succeeded_count": int(result.get("warm_succeeded_count", 0)),
+                "failed_count": int(result.get("warm_failed_count", 0)),
+            },
+            provider="sec",
+            rate_limit_state="ok",
+        )
+
+    if summary_json:
+        counters = counters_from_result(
+            result,
+            key_map={
+                "detected_candidate_count": "candidate_count",
+                "warm_attempted_count": "attempted_count",
+                "warm_succeeded_count": "succeeded_count",
+                "warm_failed_count": "failed_count",
+            },
+        )
+        payload = build_canonical_summary(
+            status="ok",
+            domain="sec",
+            command_path=["m-cache", "sec", "monitor", "poll"],
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_seconds=float(result.get("total_elapsed_seconds", 0.0)),
+            resolution_mode=None,
+            remote_attempted=bool(result.get("warm_attempted_count", 0)),
+            provider_requested="sec",
+            provider_used="sec",
+            rate_limited=False,
+            retry_count=0,
+            persisted_locally=bool(result.get("warm_succeeded_count", 0)),
+            counters=counters,
+            selection_outcome="used_requested_provider" if bool(result.get("warm_attempted_count", 0)) else "served_locally",
+            served_from="remote_then_persisted" if bool(result.get("warm_succeeded_count", 0)) else "none",
+            reason_code="remote_fetched" if bool(result.get("warm_succeeded_count", 0)) else "local_miss",
+            rate_limit_state={"provider_id": "sec", "rate_limited": False, "deferred": False},
+        )
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+
+    click.echo("m-cache sec monitor poll complete.")
+
+
+@m_cache_monitor_group.command("loop")
+@click.pass_context
+@click.option("--warm/--no-warm", default=True, show_default=True)
+@click.option("--form-type", "form_types", multiple=True)
+@click.option("--form-family", "form_families", type=click.Choice(sorted(FORM_FAMILY_MAP.keys()), case_sensitive=False), multiple=True)
+@click.option("--issuer-cik", "issuer_ciks", multiple=True)
+@click.option("--entity-cik", "entity_ciks", multiple=True)
+@click.option("--date-from", default=None)
+@click.option("--date-to", default=None)
+@click.option("--execute-extraction/--no-execute-extraction", default=False, show_default=True)
+@click.option("--persist-filing-parties/--no-persist-filing-parties", default=False, show_default=True)
+@click.option("--refresh-lookup/--no-refresh-lookup", default=True, show_default=True)
+@click.option("--interval-seconds", type=click.FloatRange(min=0.0), default=30.0, show_default=True)
+@click.option("--max-iterations", type=click.IntRange(min=1), default=5, show_default=True)
+@click.option("--summary-json/--no-summary-json", default=True, show_default=True)
+def m_cache_monitor_loop(
+    ctx: click.Context,
+    warm: bool,
+    form_types: tuple[str, ...],
+    form_families: tuple[str, ...],
+    issuer_ciks: tuple[str, ...],
+    entity_ciks: tuple[str, ...],
+    date_from: str | None,
+    date_to: str | None,
+    execute_extraction: bool,
+    persist_filing_parties: bool,
+    refresh_lookup: bool,
+    interval_seconds: float,
+    max_iterations: int,
+    summary_json: bool,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    started_at = utc_now_iso()
+    result = run_monitor_loop(
+        config,
+        interval_seconds=interval_seconds,
+        max_iterations=max_iterations,
+        warm=warm,
+        form_types=list(form_types) or None,
+        form_families=[value.lower() for value in form_families] or None,
+        issuer_ciks=list(issuer_ciks) or None,
+        entity_ciks=list(entity_ciks) or None,
+        date_from=date_from,
+        date_to=date_to,
+        execute_extraction=execute_extraction,
+        persist_filing_parties=persist_filing_parties,
+        refresh_lookup=refresh_lookup,
+    )
+    if summary_json:
+        counters = counters_from_result(
+            result,
+            key_map={
+                "total_detected_candidate_count": "candidate_count",
+                "total_warm_attempted_count": "attempted_count",
+                "total_warm_succeeded_count": "succeeded_count",
+                "total_warm_failed_count": "failed_count",
+            },
+        )
+        counters["iterations_run"] = int(result.get("iterations_run", 0))
+        payload = build_canonical_summary(
+            status="ok",
+            domain="sec",
+            command_path=["m-cache", "sec", "monitor", "loop"],
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_seconds=float(result.get("total_elapsed_seconds", 0.0)),
+            resolution_mode=None,
+            remote_attempted=bool(result.get("total_warm_attempted_count", 0)),
+            provider_requested="sec",
+            provider_used="sec",
+            rate_limited=False,
+            retry_count=0,
+            persisted_locally=bool(result.get("total_warm_succeeded_count", 0)),
+            counters=counters,
+            selection_outcome="used_requested_provider" if bool(result.get("total_warm_attempted_count", 0)) else "served_locally",
+            served_from="remote_then_persisted" if bool(result.get("total_warm_succeeded_count", 0)) else "none",
+            reason_code="remote_fetched" if bool(result.get("total_warm_succeeded_count", 0)) else "local_miss",
+            rate_limit_state={"provider_id": "sec", "rate_limited": False, "deferred": False},
+        )
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo("m-cache sec monitor loop complete.")
+
+
+@m_cache_sec_group.group("reconcile")
+def m_cache_reconcile_group() -> None:
+    """Reconciliation operations."""
+
+
+@m_cache_reconcile_group.command("run")
+@click.pass_context
+@click.option("--recent-days", type=click.IntRange(min=0), default=None)
+@click.option("--date-from", default=None)
+@click.option("--date-to", default=None)
+@click.option("--form-type", "form_types", multiple=True)
+@click.option("--form-family", "form_families", type=click.Choice(sorted(FORM_FAMILY_MAP.keys()), case_sensitive=False), multiple=True)
+@click.option("--issuer-cik", "issuer_ciks", multiple=True)
+@click.option("--catch-up-warm/--no-catch-up-warm", default=False, show_default=True)
+@click.option("--refresh-lookup/--no-refresh-lookup", default=True, show_default=True)
+@click.option("--summary-json/--no-summary-json", default=True, show_default=True)
+@click.option("--progress-json/--no-progress-json", default=True, show_default=True)
+@click.option("--progress-heartbeat-seconds", type=click.FloatRange(min=0.0), default=0.0, show_default=True)
+def m_cache_reconcile_run(
+    ctx: click.Context,
+    recent_days: int | None,
+    date_from: str | None,
+    date_to: str | None,
+    form_types: tuple[str, ...],
+    form_families: tuple[str, ...],
+    issuer_ciks: tuple[str, ...],
+    catch_up_warm: bool,
+    refresh_lookup: bool,
+    summary_json: bool,
+    progress_json: bool,
+    progress_heartbeat_seconds: float,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
+    progress = ProgressHeartbeat(
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
+        phase="reconcile.run",
+        machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema="canonical",
+        domain="sec",
+        command_path=["m-cache", "sec", "reconcile", "run"],
+    )
+    with progress:
+        result = run_reconciliation(
+            config,
+            recent_days=recent_days,
+            date_from=date_from,
+            date_to=date_to,
+            form_types=list(form_types) or None,
+            form_families=[value.lower() for value in form_families] or None,
+            issuer_ciks=list(issuer_ciks) or None,
+            catch_up_warm=catch_up_warm,
+            refresh_lookup=refresh_lookup,
+            progress_callback=(lambda payload: progress.emit_event(**payload)) if machine_progress else None,
+        )
+        progress.emit_event(
+            phase="reconcile.run.result",
+            counters={
+                "attempted_count": int(result.get("catch_up_attempted_count", 0)),
+                "succeeded_count": int(result.get("catch_up_succeeded_count", 0)),
+                "failed_count": int(result.get("catch_up_failed_count", 0)),
+                "skipped_count": int(result.get("catch_up_skipped_count", 0)),
+            },
+            provider="sec",
+            rate_limit_state="ok",
+        )
+    if summary_json:
+        counters = counters_from_result(
+            result,
+            key_map={
+                "reconciled_row_count": "candidate_count",
+                "catch_up_attempted_count": "attempted_count",
+                "catch_up_succeeded_count": "succeeded_count",
+                "catch_up_failed_count": "failed_count",
+                "catch_up_skipped_count": "skipped_count",
+            },
+        )
+        counters["discrepancy_count"] = int(result.get("reconciled_row_count", 0))
+        payload = build_canonical_summary(
+            status="ok",
+            domain="sec",
+            command_path=["m-cache", "sec", "reconcile", "run"],
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_seconds=float(result.get("total_elapsed_seconds", 0.0)),
+            resolution_mode=None,
+            remote_attempted=bool(result.get("catch_up_attempted_count", 0)),
+            provider_requested="sec",
+            provider_used="sec",
+            rate_limited=False,
+            retry_count=0,
+            persisted_locally=bool(result.get("catch_up_succeeded_count", 0)),
+            counters=counters,
+            selection_outcome="used_requested_provider" if bool(result.get("catch_up_attempted_count", 0)) else "served_locally",
+            served_from="remote_then_persisted" if bool(result.get("catch_up_succeeded_count", 0)) else "none",
+            reason_code="reconcile_completed",
+            rate_limit_state={"provider_id": "sec", "rate_limited": False, "deferred": False},
+        )
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo("m-cache sec reconcile run complete.")
+
+
+@m_cache_sec_group.group("providers")
+def m_cache_providers_group() -> None:
+    """Provider inspection operations."""
+
+
+@m_cache_providers_group.command("list")
+@click.pass_context
+@click.option("--content-domain", default=None, help="Optional content-domain filter.")
+@click.option("--active-only", is_flag=True, default=False, help="Only show active providers.")
+@click.option("--provider-type", default=None, help="Optional provider-type filter.")
+@click.option("--json/--no-json", "as_json", default=True, show_default=True, help="Emit canonical JSON rows.")
+def m_cache_providers_list(
+    ctx: click.Context,
+    content_domain: str | None,
+    active_only: bool,
+    provider_type: str | None,
+    as_json: bool,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    rows = list_providers(
+        config,
+        content_domain=content_domain,
+        active_only=active_only,
+        provider_type=provider_type,
+    )
+    if as_json:
+        click.echo(json.dumps(rows, sort_keys=True))
+        return
+    if not rows:
+        click.echo("No providers matched.")
+        return
+    click.echo(pd.DataFrame(rows).to_string(index=False))
+
+
+@m_cache_providers_group.command("show")
+@click.pass_context
+@click.option("--provider", "provider_id", required=True, help="Provider identifier.")
+@click.option("--json/--no-json", "as_json", default=True, show_default=True, help="Emit canonical JSON detail.")
+def m_cache_providers_show(
+    ctx: click.Context,
+    provider_id: str,
+    as_json: bool,
+) -> None:
+    runtime_config = _m_cache_runtime_config(ctx)
+    effective = _m_cache_effective_config(ctx)
+    effective_provider = effective_provider_cfg(effective.domains["sec"].providers, provider_id)
+    try:
+        payload = show_provider(runtime_config, provider_id=provider_id, effective_provider=effective_provider)
+    except LookupError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(render_summary_block(f"Provider {provider_id}", payload))
+
+
+@m_cache_sec_group.group("resolve")
+def m_cache_resolve_group() -> None:
+    """Resolve operations."""
+
+
+@m_cache_resolve_group.command("filing")
+@click.pass_context
+@click.option("--accession-number", required=True, help="Canonical SEC accession number (##########-##-######).")
+@click.option(
+    "--resolution-mode",
+    type=click.Choice(["local_only", "resolve_if_missing", "refresh_if_stale"], case_sensitive=False),
+    default="resolve_if_missing",
+    show_default=True,
+)
+@click.option("--provider", default="sec", show_default=True, help="Requested provider id.")
+@click.option("--summary-json/--no-summary-json", default=True, show_default=True, help="Emit canonical summary JSON to stdout.")
+@click.option("--progress-json/--no-progress-json", default=True, show_default=True, help="Emit canonical NDJSON progress events to stderr.")
+@click.option("--progress-heartbeat-seconds", type=click.FloatRange(min=0.0), default=0.0, show_default=True)
+def m_cache_resolve_filing(
+    ctx: click.Context,
+    accession_number: str,
+    resolution_mode: str,
+    provider: str,
+    summary_json: bool,
+    progress_json: bool,
+    progress_heartbeat_seconds: float,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    mode = resolution_mode.lower()
+    machine_progress = progress_machine_enabled(progress_json=progress_json)
+    started_at = utc_now_iso()
+    progress = ProgressHeartbeat(
+        enabled=machine_progress or progress_enabled(summary_json=summary_json),
+        phase="resolve.filing",
+        machine_json=machine_progress,
+        machine_liveness_seconds=progress_heartbeat_seconds if machine_progress else None,
+        output_schema="canonical",
+        domain="sec",
+        command_path=["m-cache", "sec", "resolve", "filing"],
+    )
+    with progress:
+        service = FilingRetrievalService(config)
+        try:
+            result = service.retrieve_filing_content_local_first(
+                accession_number,
+                resolution_mode=mode,
+                provider_requested=provider,
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        progress.emit_event(
+            phase="resolve.filing.result",
+            event="progress",
+            counters={
+                "attempted_count": 1,
+                "succeeded_count": 1 if result.success else 0,
+                "failed_count": 0 if result.success else 1,
+            },
+            provider=result.provider_used or result.provider_requested or provider,
+            canonical_key=accession_number,
+            rate_limit_state="rate_limited" if result.rate_limited else "ok",
+        )
+
+    counters = {
+        "attempted_count": 1,
+        "succeeded_count": 1 if result.success else 0,
+        "failed_count": 0 if result.success else 1,
+    }
+    if summary_json:
+        payload = build_canonical_summary(
+            status="ok" if result.success else "error",
+            domain="sec",
+            command_path=["m-cache", "sec", "resolve", "filing"],
+            started_at=started_at,
+            finished_at=utc_now_iso(),
+            elapsed_seconds=0.0,
+            resolution_mode=result.resolution_mode,
+            remote_attempted=result.remote_attempted,
+            provider_requested=result.provider_requested,
+            provider_used=result.provider_used,
+            rate_limited=result.rate_limited,
+            retry_count=result.retry_count,
+            persisted_locally=result.persisted_locally,
+            counters=counters,
+            deferred=bool(result.deferred_until),
+            deferred_until=result.deferred_until,
+            selection_outcome=result.selection_outcome,
+            served_from=result.served_from,
+            reason_code=result.reason_code,
+            provider_skip_reasons=result.provider_skip_reasons,
+            rate_limit_state={
+                "provider_id": result.provider_used or result.provider_requested,
+                "rate_limited": result.rate_limited,
+                "deferred": bool(result.deferred_until),
+                "deferred_until": result.deferred_until,
+            },
+            errors=[] if result.success else [result.error or result.reason or "resolution_failed"],
+        )
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(
+        render_summary_block(
+            f"Resolve filing {accession_number}",
+            {
+                "resolution_mode": result.resolution_mode,
+                "provider_requested": result.provider_requested,
+                "provider_used": result.provider_used,
+                "served_from": result.served_from,
+                "remote_attempted": result.remote_attempted,
+                "persisted_locally": result.persisted_locally,
+                "success": result.success,
+                "reason_code": result.reason_code,
+                "rate_limited": result.rate_limited,
+                "retry_count": result.retry_count,
+                "deferred_until": result.deferred_until,
+                "local_path": str(result.local_path) if result.local_path is not None else None,
+            },
+        )
+    )
+
+
+@m_cache_sec_group.group("storage")
+def m_cache_storage_group() -> None:
+    """Reserved Wave 1 family (stub)."""
+
+
+@m_cache_sec_group.group("audit")
+def m_cache_audit_group() -> None:
+    """Reserved Wave 1 family (stub)."""
+
+
+@m_cache_sec_group.group("api")
+def m_cache_api_group() -> None:
+    """Reserved Wave 1 family (stub)."""
+
+
+@m_cache_sec_group.group("aug")
+def m_cache_aug_group() -> None:
+    """Canonical augmentation family name."""
+
+
+@m_cache_sec_group.group("augmentations")
+def m_cache_augmentations_alias_group() -> None:
+    """Backward-compatible augmentation alias."""
+
+
+@m_cache_aug_group.command("list-types")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_list_types(as_json: bool) -> None:
+    payload = {
+        "types": [
+            {
+                "augmentation_type": shared_type,
+                "shared": True,
+            }
+            for shared_type in SHARED_AUGMENTATION_TYPES
+        ]
+    }
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    _echo_rows(payload["types"], as_json=False, empty_message="No augmentation types found.")
+
+
+@m_cache_aug_group.command("inspect-target")
+@click.pass_context
+@click.option("--accession-number", required=True, help="Canonical filing accession key.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_inspect_target(
+    ctx: click.Context,
+    accession_number: str,
+    as_json: bool,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    service = FilingRetrievalService(config)
+    try:
+        metadata = service.find_filing_metadata(accession_number)
+        if metadata is None:
+            raise click.ClickException(
+                "Filing metadata was not found in local lookup or merged index metadata."
+            )
+        meta = build_api_augmentation_meta(config, accession_number)
+        rows = service.list_augmentations_for_accession(accession_number, limit=200)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    canonical_types_present = sorted(
+        {
+            mapped
+            for mapped in [
+                map_to_shared_augmentation_type(
+                    augmentation_type=str(row.get("augmentation_type") or ""),
+                    layer_type=str(row.get("layer_type") or ""),
+                )
+                for row in rows
+            ]
+            if mapped is not None
+        }
+    )
+    payload = {
+        "domain": "sec",
+        "resource_family": "filing",
+        "canonical_key": accession_number,
+        "augmentation_meta": meta,
+        "target_descriptor": meta.get("target_descriptor"),
+        "source_text_version": meta.get("source_text_version"),
+        "canonical_types_present": canonical_types_present,
+        "run_count": len(rows),
+        "inspect_path": meta.get("inspect_path"),
+    }
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(render_summary_block(f"Inspect target {accession_number}", payload))
+
+
+@m_cache_aug_group.command("submit-run")
+@click.option("--payload-json", default=None, help="Inline run-submission JSON envelope.")
+@click.option(
+    "--payload-file",
+    type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
+    default=None,
+    help="Path to run-submission JSON envelope.",
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_submit_run(
+    payload_json: str | None,
+    payload_file: Path | None,
+    as_json: bool,
+) -> None:
+    payload = _load_aug_payload_or_fail(payload_json=payload_json, payload_file=payload_file)
+    try:
+        validated = validate_producer_run_submission(payload)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    result = {
+        "accepted": False,
+        "validated": True,
+        "command": "submit-run",
+        "mode": "validate_only",
+        "non_pilot": True,
+        "persisted": False,
+        "message": "Wave 4.1 non-pilot surface: envelope validated, no write-path executed.",
+        "run": validated,
+    }
+    if as_json:
+        click.echo(json.dumps(result, sort_keys=True))
+        return
+    click.echo(render_summary_block("Submit run (validate-only)", result))
+
+
+@m_cache_aug_group.command("submit-artifact")
+@click.option("--payload-json", default=None, help="Inline artifact-submission JSON envelope.")
+@click.option(
+    "--payload-file",
+    type=click.Path(path_type=Path, file_okay=True, dir_okay=False),
+    default=None,
+    help="Path to artifact-submission JSON envelope.",
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_submit_artifact(
+    payload_json: str | None,
+    payload_file: Path | None,
+    as_json: bool,
+) -> None:
+    payload = _load_aug_payload_or_fail(payload_json=payload_json, payload_file=payload_file)
+    try:
+        validated = validate_producer_artifact_submission(payload)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    result = {
+        "accepted": False,
+        "validated": True,
+        "command": "submit-artifact",
+        "mode": "validate_only",
+        "non_pilot": True,
+        "persisted": False,
+        "message": "Wave 4.1 non-pilot surface: envelope validated, no write-path executed.",
+        "artifact": validated,
+    }
+    if as_json:
+        click.echo(json.dumps(result, sort_keys=True))
+        return
+    click.echo(render_summary_block("Submit artifact (validate-only)", result))
+
+
+@m_cache_aug_group.command("status")
+@click.pass_context
+@click.option("--run-id", default=None, help="Canonical run id.")
+@click.option(
+    "--idempotency-key",
+    default=None,
+    help="Optional producer idempotency key. When explicit key storage is absent, run_id-compatible values are accepted.",
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_status(
+    ctx: click.Context,
+    run_id: str | None,
+    idempotency_key: str | None,
+    as_json: bool,
+) -> None:
+    if not run_id and not idempotency_key:
+        raise click.ClickException("Provide --run-id or --idempotency-key.")
+    config = _m_cache_runtime_config(ctx)
+    materialize_shared_augmentation_metadata(config)
+    runs = load_shared_augmentation_runs(config)
+    if runs.empty:
+        raise click.ClickException("No augmentation runs found.")
+
+    selected: pd.DataFrame
+    if run_id:
+        selected = runs[runs["run_id"].astype(str) == str(run_id)]
+    elif "idempotency_key" in runs.columns:
+        selected = runs[runs["idempotency_key"].astype(str) == str(idempotency_key)]
+    else:
+        selected = runs[runs["run_id"].astype(str) == str(idempotency_key)]
+
+    if selected.empty:
+        raise click.ClickException("Run status not found for provided selector.")
+    row = selected.iloc[0].to_dict()
+    canonical_key = str(row.get("canonical_key") or "")
+    current_version = deterministic_source_text_version(config, canonical_key) if canonical_key else None
+    source_text_version = str(row.get("source_text_version") or "") or None
+    status_row = build_run_status_view(
+        run_id=str(row.get("run_id") or ""),
+        idempotency_key=(
+            str(row.get("idempotency_key"))
+            if "idempotency_key" in selected.columns and pd.notna(row.get("idempotency_key"))
+            else str(idempotency_key or row.get("run_id") or "")
+        ),
+        augmentation_type=str(row.get("augmentation_type") or ""),
+        canonical_key=canonical_key,
+        source_text_version=str(source_text_version or ""),
+        producer_name=str(row.get("producer_name") or ""),
+        producer_version=str(row.get("producer_version") or ""),
+        status=str(row.get("status") or ""),
+        success=bool(row.get("success")),
+        reason_code=str(row.get("reason_code") or ""),
+        persisted_locally=bool(row.get("persisted_locally")),
+        augmentation_stale=(
+            bool(source_text_version != current_version)
+            if source_text_version is not None and current_version is not None
+            else None
+        ),
+        last_updated_at=str(row.get("event_at") or "") or None,
+    )
+    payload = {"status": status_row}
+    if as_json:
+        click.echo(json.dumps(payload, sort_keys=True))
+        return
+    click.echo(render_summary_block(f"Run status {status_row['run_id']}", status_row))
+
+
+@m_cache_aug_group.command("inspect-runs")
+@click.pass_context
+@click.option("--accession-number", default=None, help="Optional canonical filing accession key filter.")
+@click.option("--submission-id", default=None, help="Optional SEC submission id filter.")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_inspect_runs(
+    ctx: click.Context,
+    accession_number: str | None,
+    submission_id: str | None,
+    limit: int,
+    as_json: bool,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    materialize_shared_augmentation_metadata(config)
+    runs = load_shared_augmentation_runs(config)
+    if accession_number:
+        runs = runs[runs["canonical_key"].astype(str) == str(accession_number)]
+    if submission_id:
+        runs = runs[runs["source_submission_id"].astype(str) == str(submission_id)]
+    runs = runs.head(int(limit)).reset_index(drop=True)
+    rows = runs.to_dict(orient="records")
+    if as_json:
+        click.echo(json.dumps({"runs": rows}, sort_keys=True))
+        return
+    _echo_rows(rows, as_json=False, empty_message="No augmentation runs found.")
+
+
+@m_cache_aug_group.command("inspect-artifacts")
+@click.pass_context
+@click.option("--accession-number", default=None, help="Optional canonical filing accession key filter.")
+@click.option("--submission-id", default=None, help="Optional SEC submission id filter.")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_inspect_artifacts(
+    ctx: click.Context,
+    accession_number: str | None,
+    submission_id: str | None,
+    limit: int,
+    as_json: bool,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    rows = list_shared_augmentation_artifacts(
+        config,
+        accession_number=accession_number,
+        submission_id=submission_id,
+        limit=limit,
+    )
+    if as_json:
+        click.echo(json.dumps({"artifacts": rows}, sort_keys=True))
+        return
+    _echo_rows(rows, as_json=False, empty_message="No augmentation artifacts found.")
+
+
+@m_cache_aug_group.command("events")
+@click.pass_context
+@click.option("--accession-number", default=None, help="Optional canonical filing accession key filter.")
+@click.option("--submission-id", default=None, help="Optional SEC submission id filter.")
+@click.option("--limit", type=click.IntRange(min=0), default=100, show_default=True, help="Maximum rows to print.")
+@click.option("--json", "as_json", is_flag=True, default=False, help="Emit JSON payload only.")
+def m_cache_aug_events(
+    ctx: click.Context,
+    accession_number: str | None,
+    submission_id: str | None,
+    limit: int,
+    as_json: bool,
+) -> None:
+    config = _m_cache_runtime_config(ctx)
+    materialize_shared_augmentation_metadata(config)
+    rows = load_shared_augmentation_events(config)
+    if accession_number:
+        rows = rows[rows["canonical_key"].astype(str) == str(accession_number)]
+    if submission_id:
+        rows = rows[rows["source_submission_id"].astype(str) == str(submission_id)]
+    rows = rows.head(int(limit)).reset_index(drop=True)
+    payload_rows = rows.to_dict(orient="records")
+    if as_json:
+        click.echo(json.dumps({"events": payload_rows}, sort_keys=True))
+        return
+    _echo_rows(payload_rows, as_json=False, empty_message="No augmentation events found.")
+
+
+for _m_cache_aug_name, _m_cache_aug_command in augmentations_group.commands.items():
+    if _m_cache_aug_name not in m_cache_aug_group.commands:
+        m_cache_aug_group.add_command(_m_cache_aug_command, _m_cache_aug_name)
+    m_cache_augmentations_alias_group.add_command(_m_cache_aug_command, _m_cache_aug_name)
+
+for _m_cache_aug_name, _m_cache_aug_command in m_cache_aug_group.commands.items():
+    if _m_cache_aug_name not in m_cache_augmentations_alias_group.commands:
+        m_cache_augmentations_alias_group.add_command(_m_cache_aug_command, _m_cache_aug_name)
 
 
 if __name__ == "__main__":

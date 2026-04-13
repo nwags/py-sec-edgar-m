@@ -10,6 +10,40 @@ class HealthResponse(BaseModel):
     service: str
 
 
+class ApiResolutionMetaResponse(BaseModel):
+    resolution_mode: str
+    remote_attempted: bool
+    provider_requested: str | None = None
+    provider_used: str | None = None
+    served_from: str
+    persisted_locally: bool | None = None
+    rate_limited: bool = False
+    retry_count: int = 0
+    deferred_until: str | None = None
+    reason_code: str | None = None
+
+
+class ApiAugmentationMetaResponse(BaseModel):
+    augmentation_available: bool
+    augmentation_types_present: list[str] = Field(default_factory=list)
+    last_augmented_at: str | None = None
+    augmentation_stale: bool | None = None
+    inspect_path: str | None = None
+    source_text_version: str | None = None
+    target_descriptor: dict[str, object] | None = None
+
+
+class ProducerTargetDescriptorResponse(BaseModel):
+    domain: str
+    resource_family: str
+    canonical_key: str
+    text_source: str
+    source_text_version: str
+    language: str | None = None
+    document_time_reference: str | None = None
+    producer_hints: dict[str, object] = Field(default_factory=dict)
+
+
 class FilingMetadataResponse(BaseModel):
     accession_number: str
     filing_cik: str | None = None
@@ -21,6 +55,8 @@ class FilingMetadataResponse(BaseModel):
     metadata_source: str | None = None
     metadata_surface: str | None = None
     augmentations: list["FilingAugmentationItemResponse"] | None = None
+    resolution_meta: ApiResolutionMetaResponse | None = None
+    augmentation_meta: ApiAugmentationMetaResponse | None = None
 
 
 class AugmentationSubmissionItemRequest(BaseModel):

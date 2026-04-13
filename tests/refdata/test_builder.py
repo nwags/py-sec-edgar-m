@@ -57,6 +57,7 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
         "series_classes",
         "reference_file_manifest",
         "sec_source_surfaces",
+        "provider_registry",
     }
     assert set(written.keys()) == expected
     for path in written.values():
@@ -93,6 +94,12 @@ def test_refdata_refresh_writes_expected_parquet_outputs(tmp_path: Path) -> None
     surfaces = pd.read_parquet(written["sec_source_surfaces"])
     assert {"provider_id", "surface_id", "supports_content_retrieval", "retrieval_priority"}.issubset(surfaces.columns)
     assert "sec_archives_submissions" in set(surfaces["surface_id"].astype(str).tolist())
+
+    provider_registry = pd.read_parquet(written["provider_registry"])
+    assert {"provider_id", "domain", "content_domain", "rate_limit_policy", "direct_resolution_allowed"}.issubset(
+        set(provider_registry.columns)
+    )
+    assert "sec" in set(provider_registry["provider_id"].astype(str).tolist())
 
 
 def test_refdata_refresh_uses_fallback_raw_sources_when_project_root_raw_is_empty(tmp_path: Path) -> None:

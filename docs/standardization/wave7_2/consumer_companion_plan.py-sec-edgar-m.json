@@ -1,0 +1,7 @@
+{
+  "repo": "py-sec-edgar-m",
+  "release_role": "conservative validator/signoff consumer for non-pilot and no-dual-authority safety",
+  "required_validation": "pytest -q; pytest -q tests/test_wave6_external_shared_facade.py tests/test_m_cache_cli.py tests/test_wave4_protocol_readonly.py tests/test_api_augmentations.py; M_CACHE_SHARED_SOURCE=external pytest -q tests/test_wave6_external_shared_facade.py",
+  "evidence_input": "central bundle inputs under evidence/candidates/<tag>/consumer/py-sec-edgar-m/: SIGNOFF.json + SIGNOFF.md",
+  "blocker_scope": "non-pilot or no-dual-authority safety drift, validation failure, pin mismatch, or rollback readiness failure"
+}

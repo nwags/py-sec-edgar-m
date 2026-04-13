@@ -1,0 +1,6 @@
+{
+  "repo": "py-sec-edgar-m",
+  "external_repo_name": "m-cache-shared-ext",
+  "public_api_policy": "strict first-public-api v1 subset only; no shared public API broadening in Wave 7",
+  "required_release_artifacts": "repo signoff note, RC/stable validation evidence, compatibility notes, rollback notes"
+}

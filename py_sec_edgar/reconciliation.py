@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import time
 from typing import Callable
@@ -390,6 +391,22 @@ def run_reconciliation(
                 "catch_up_succeeded": bool(catch_up_succeeded),
                 "catch_up_skipped": bool(catch_up_skipped),
                 "catch_up_skip_reason": catch_up_skip_reason if catch_up_skipped else None,
+                "discrepancy_key": _discrepancy_key(combined, final_discrepancy_type),
+                "domain": "sec",
+                "target_type": "filing",
+                "seen_key": combined.key,
+                "discrepancy_code": final_discrepancy_type,
+                "target_date": combined.filing_date,
+                "details": json.dumps(
+                    {
+                        "feed_seen": bool(combined.feed_seen),
+                        "merged_index_seen": bool(combined.merged_index_seen),
+                        "local_submission_present": bool(local_present_final),
+                        "source_url": resolved_source_url,
+                    },
+                    sort_keys=True,
+                ),
+                "observed_at": run_time,
             }
         )
 
@@ -916,6 +933,14 @@ def _append_discrepancies(path: Path, rows: list[dict[str, object]]) -> int:
         "catch_up_succeeded",
         "catch_up_skipped",
         "catch_up_skip_reason",
+        "discrepancy_key",
+        "domain",
+        "target_type",
+        "seen_key",
+        "discrepancy_code",
+        "target_date",
+        "details",
+        "observed_at",
     ]
     current = _load_parquet_or_empty(path, columns)
     if rows:
@@ -938,10 +963,21 @@ def _append_events(path: Path, rows: list[dict[str, object]]) -> int:
         "source_id",
         "error",
         "error_class",
+        "event_at",
+        "domain",
+        "event_code",
+        "target_date",
+        "discrepancy_count",
+        "catch_up_warm",
+        "provider",
+        "window_from",
+        "window_to",
+        "lookup_refreshed",
     ]
+    canonicalized_rows = [_canonicalize_reconciliation_event_row(row) for row in rows]
     current = _load_parquet_or_empty(path, columns)
-    if rows:
-        current = pd.concat([current, pd.DataFrame(rows)], ignore_index=True)
+    if canonicalized_rows:
+        current = pd.concat([current, pd.DataFrame(canonicalized_rows)], ignore_index=True)
     if len(current.index) > _MAX_RECONCILIATION_EVENTS_ROWS:
         current = current.tail(_MAX_RECONCILIATION_EVENTS_ROWS).reset_index(drop=True)
     current.to_parquet(path, index=False)
@@ -967,3 +1003,30 @@ def _as_text(value: object) -> str | None:
 
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _discrepancy_key(item: ReconciliationItem, discrepancy_code: str) -> str:
+    if item.accession_number:
+        return f"sec:filing:{item.accession_number}:{discrepancy_code}"
+    if item.filename:
+        return f"sec:filing:{item.filename}:{discrepancy_code}"
+    return f"sec:filing:unknown:{discrepancy_code}"
+
+
+def _canonicalize_reconciliation_event_row(row: dict[str, object]) -> dict[str, object]:
+    out = dict(row)
+    event_time = _as_text(row.get("event_time")) or _now_utc_iso()
+    out["event_at"] = event_time
+    out["domain"] = "sec"
+    out["event_code"] = _as_text(row.get("action")) or "reconcile_event"
+    out["target_date"] = None
+    out["discrepancy_count"] = 0
+    out["catch_up_warm"] = bool("catch_up" in str(row.get("action") or ""))
+    out["provider"] = "sec"
+    out["window_from"] = None
+    out["window_to"] = None
+    out["lookup_refreshed"] = _as_text(row.get("action")) in {
+        "reconcile_lookup_incremental_performed",
+        "reconcile_lookup_full_refresh_fallback_performed",
+    }
+    return out

@@ -61,6 +61,7 @@ AUGMENTATION_ITEMS_COLUMNS = [
     "schema_version",
     "augmentation_type",
     "payload_schema_version",
+    "source_text_version",
     "payload_json",
 ]
 
@@ -684,6 +685,10 @@ def record_submission_lifecycle_transition(
         "source": source or "api_admin",
     }
     _append_lifecycle_events(config, [event])
+    # Keep shared Wave 3 companion metadata in sync with SEC-authoritative artifacts.
+    from py_sec_edgar.augmentation_wave3 import materialize_shared_augmentation_metadata
+
+    materialize_shared_augmentation_metadata(config)
     return event
 
 
@@ -992,6 +997,7 @@ def _rows_from_items_df(df: pd.DataFrame) -> list[dict[str, object]]:
                 "schema_version": row.get("schema_version"),
                 "augmentation_type": row.get("augmentation_type"),
                 "payload_schema_version": row.get("payload_schema_version"),
+                "source_text_version": row.get("source_text_version"),
                 "payload": _payload_from_json(row.get("payload_json")),
             }
         )
@@ -1041,8 +1047,14 @@ def persist_augmentation_submission(
 
     item_rows: list[dict[str, object]] = []
     governance_rows: list[dict[str, object]] = []
+    from py_sec_edgar.wave4_shared.helpers import deterministic_source_text_version
+
     for item_index, item in enumerate(items):
         payload = item.get("payload") or {}
+        source_text_version = deterministic_source_text_version(
+            config,
+            str(item.get("accession_number") or ""),
+        )
         governance = _evaluate_governance_for_item(
             layer_type=layer_type,
             augmentation_type=item.get("augmentation_type"),
@@ -1063,6 +1075,7 @@ def persist_augmentation_submission(
                 "schema_version": schema_version,
                 "augmentation_type": item.get("augmentation_type"),
                 "payload_schema_version": item.get("payload_schema_version"),
+                "source_text_version": source_text_version,
                 "payload_json": _payload_to_json(payload),
             }
         )
@@ -1100,6 +1113,10 @@ def persist_augmentation_submission(
         items_df = items_df.head(_MAX_ITEMS_ROWS).reset_index(drop=True)
     items_df.to_parquet(items_path, index=False)
     _append_governance_events(config, governance_rows)
+    # Keep shared Wave 3 companion metadata in sync with SEC-authoritative artifacts.
+    from py_sec_edgar.augmentation_wave3 import materialize_shared_augmentation_metadata
+
+    materialize_shared_augmentation_metadata(config)
 
     return AugmentationSubmissionPersistResult(
         submission_id=submission_id,

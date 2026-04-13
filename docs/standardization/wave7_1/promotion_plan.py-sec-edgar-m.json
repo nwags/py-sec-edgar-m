@@ -1,0 +1,6 @@
+{
+  "repo": "py-sec-edgar-m",
+  "required_signoff": "repo validator/signoff consumer decision required with blocker_status=none",
+  "blocker_conditions": "blocking_authority_drift, blocking_behavior_drift, blocking_validation_failure",
+  "rollback_path": "repin prior known-good stable tag, force M_CACHE_SHARED_SOURCE=local, rerun required validations, publish incident/recovery evidence"
+}

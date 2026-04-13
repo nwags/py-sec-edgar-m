@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import uvicorn
 
 from py_sec_edgar.api.app import create_app
 from py_sec_edgar.config import AppConfig, load_config
+from py_sec_edgar.m_cache_config import load_m_cache_effective_config
 from py_sec_edgar.monitoring import run_monitor_poll
 from py_sec_edgar.progress import ProgressHeartbeat, progress_enabled, progress_machine_enabled, progress_payload_from_result
 
@@ -94,6 +96,28 @@ def _monitor_kwargs(settings: dict[str, object]) -> dict[str, object]:
 
 
 def _runtime_snapshot(mode: str, config: AppConfig, settings: dict[str, object]) -> dict[str, object]:
+    try:
+        effective_cfg = load_m_cache_effective_config(project_root=config.project_root)
+        effective_cfg_payload = {
+            "global": asdict(effective_cfg.global_config),
+            "domains": {
+                key: {
+                    **{
+                        "enabled": value.enabled,
+                        "cache_root": value.cache_root,
+                        "normalized_refdata_root": value.normalized_refdata_root,
+                        "lookup_root": value.lookup_root,
+                        "default_resolution_mode": value.default_resolution_mode,
+                        "runtime": value.runtime,
+                    },
+                    "providers": {provider_key: asdict(provider_value) for provider_key, provider_value in value.providers.items()},
+                }
+                for key, value in effective_cfg.domains.items()
+            },
+            "source_path": effective_cfg.source_path,
+        }
+    except Exception:
+        effective_cfg_payload = None
     return {
         "event": "service_startup",
         "mode": mode,
@@ -110,6 +134,7 @@ def _runtime_snapshot(mode: str, config: AppConfig, settings: dict[str, object])
         "monitor_execute_extraction": bool(settings["monitor_execute_extraction"]),
         "monitor_persist_filing_parties": bool(settings["monitor_persist_filing_parties"]),
         "monitor_single_instance": bool(settings["monitor_single_instance"]),
+        "effective_config": effective_cfg_payload,
     }
 
 

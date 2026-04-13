@@ -144,3 +144,30 @@ def test_monitor_poll_keyboard_interrupt_exits_cleanly(monkeypatch) -> None:
     assert result.exit_code != 0
     assert "Interrupted by user." in result.output
     assert "Traceback" not in result.output
+
+
+def test_monitor_poll_summary_json_canonical_schema_is_additive(monkeypatch) -> None:
+    runner = CliRunner()
+    monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: object())
+
+    def fake_poll(config, **kwargs):
+        return {
+            "detected_candidate_count": 2,
+            "warm_attempted_count": 2,
+            "warm_succeeded_count": 1,
+            "warm_failed_count": 1,
+            "total_elapsed_seconds": 0.3,
+        }
+
+    monkeypatch.setattr(cli, "run_monitor_poll", fake_poll)
+    result = runner.invoke(
+        cli.main,
+        ["monitor", "poll", "--summary-json", "--progress-json", "--output-schema", "canonical"],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["domain"] == "sec"
+    assert payload["command_path"] == ["py-sec-edgar", "monitor", "poll"]
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert stderr_lines
+    assert json.loads(stderr_lines[0])["domain"] == "sec"

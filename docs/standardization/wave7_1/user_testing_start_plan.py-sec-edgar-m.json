@@ -1,0 +1,6 @@
+{
+  "repo": "py-sec-edgar-m",
+  "requires_wave7_1_completion": true,
+  "requires_shared_rc_validation": true,
+  "key_start_gate_note": "start only after Wave 7.1 complete, one shared RC execution cycle, working central evidence bundle flow, verified rollback, and no open blocking lifecycle incident"
+}

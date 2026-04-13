@@ -268,3 +268,22 @@ def test_lookup_refresh_summary_json_with_progress_json_keeps_stdout_clean(monke
     assert len(stderr_lines) >= 2
     assert all('"event": "progress"' in line for line in stderr_lines)
 
+
+def test_lookup_refresh_summary_json_canonical_schema_is_additive(monkeypatch, tmp_path: Path) -> None:
+    cfg = load_config(tmp_path)
+    _seed_lookup_inputs(cfg, with_filing_parties=True)
+    monkeypatch.setattr(cli, "load_config", lambda *args, **kwargs: cfg)
+
+    result = CliRunner().invoke(
+        cli.main,
+        ["lookup", "refresh", "--summary-json", "--output-schema", "canonical", "--progress-json"],
+    )
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout.strip())
+    assert payload["domain"] == "sec"
+    assert payload["command_path"] == ["py-sec-edgar", "lookup", "refresh"]
+    assert "counters" in payload
+    stderr_lines = [line for line in result.stderr.splitlines() if line.strip()]
+    assert stderr_lines
+    first = json.loads(stderr_lines[0])
+    assert first["domain"] == "sec"

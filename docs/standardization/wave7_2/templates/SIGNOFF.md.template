@@ -1,0 +1,33 @@
+# Consumer Signoff Input
+
+- candidate tag: `<tag>`
+- repo: `py-sec-edgar-m`
+- release role: `Consumer Validator/Signoff Contributor`
+
+## RC Consumption
+
+- consumption method: `export PYTHONPATH="$M_CACHE_SHARED_EXT_SRC${PYTHONPATH:+:$PYTHONPATH}"`
+- actual source path used:
+- active virtualenv:
+
+## Validation Commands Run
+
+- `pytest -q`
+- `pytest -q tests/test_wave6_external_shared_facade.py tests/test_m_cache_cli.py tests/test_wave4_protocol_readonly.py tests/test_api_augmentations.py`
+- `M_CACHE_SHARED_SOURCE=external pytest -q tests/test_wave6_external_shared_facade.py`
+
+## Safety Attestation
+
+- `py_sec_edgar.wave4_shared` first-hop facade unchanged: yes/no
+- non-pilot validate-only behavior unchanged: yes/no
+- SEC no-dual-authority unchanged: yes/no
+- `aug` canonical and `augmentations` alias unchanged: yes/no
+
+## Signoff Outcome
+
+- pin_confirmed: true/false
+- validation_status: passed/failed
+- signoff_state: pass/warn/block
+- blockers:
+- warnings:
+- rollback_ready: true/false

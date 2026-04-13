@@ -21,12 +21,18 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
         stream: io.TextIOBase | None = None,
         machine_json: bool = False,
         machine_liveness_seconds: float | None = None,
+        output_schema: str = "legacy",
+        domain: str | None = None,
+        command_path: list[str] | None = None,
     ) -> None:
         self.enabled = bool(enabled)
         self.phase = str(phase)
         self.interval_seconds = max(0.2, float(interval_seconds))
         self.stream = stream or sys.stderr
         self.machine_json = bool(machine_json)
+        self.output_schema = str(output_schema).strip().lower() or "legacy"
+        self.domain = str(domain).strip() if domain else None
+        self.command_path = [str(item).strip() for item in (command_path or []) if str(item).strip()]
         if machine_liveness_seconds is None:
             self.machine_liveness_seconds: float | None = None
         else:
@@ -42,6 +48,9 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
         self._window_date: str | None = None
         self._window_index: int | None = None
         self._window_total: int | None = None
+        self._provider: str | None = None
+        self._canonical_key: str | None = None
+        self._rate_limit_state: str | None = None
         self._last_machine_signature: tuple[object, ...] | None = None
         self._last_machine_emitted_at = self._started_at
         self._last_substantive_event_at = self._started_at
@@ -49,7 +58,10 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
     def __enter__(self) -> "ProgressHeartbeat":
         if self.enabled:
             if self.machine_json:
-                self.emit_event()
+                if self.output_schema == "canonical":
+                    self.emit_event(event="started")
+                else:
+                    self.emit_event()
             else:
                 self._emit_once(prefix="progress_start")
             thread_required = (not self.machine_json) or (self.machine_liveness_seconds is not None)
@@ -87,12 +99,16 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
     def emit_event(
         self,
         *,
+        event: str | None = None,
         phase: str | None = None,
         counters: Mapping[str, object] | None = None,
         detail: str | None = None,
         window_date: str | None = None,
         window_index: int | None = None,
         window_total: int | None = None,
+        provider: str | None = None,
+        canonical_key: str | None = None,
+        rate_limit_state: str | None = None,
     ) -> None:
         if not self.enabled or not self.machine_json:
             return
@@ -107,7 +123,14 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
                 window_index=window_index,
                 window_total=window_total,
             )
-        self._emit_machine_event(is_substantive=True)
+        with self._lock:
+            if provider is not None:
+                self._provider = str(provider) if str(provider).strip() else None
+            if canonical_key is not None:
+                self._canonical_key = str(canonical_key) if str(canonical_key).strip() else None
+            if rate_limit_state is not None:
+                self._rate_limit_state = str(rate_limit_state) if str(rate_limit_state).strip() else None
+        self._emit_machine_event(is_substantive=True, event=event or "progress")
 
     def stop(self, *, final_status: str = "done") -> None:
         if not self.enabled:
@@ -117,8 +140,12 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
             self._thread.join(timeout=max(1.0, self.interval_seconds + 0.5))
             self._thread = None
         if self.machine_json:
-            detail = "interrupted" if final_status == "interrupted" else "done"
-            self.emit_event(detail=detail)
+            if self.output_schema == "canonical":
+                final_event = "interrupted" if final_status == "interrupted" else "completed"
+                self.emit_event(event=final_event)
+            else:
+                detail = "interrupted" if final_status == "interrupted" else "done"
+                self.emit_event(detail=detail)
         else:
             self._emit_once(prefix=f"progress_{final_status}")
 
@@ -128,7 +155,8 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
             wait_seconds = min(wait_seconds, self.machine_liveness_seconds)
         while not self._stop_event.wait(wait_seconds):
             if self.machine_json:
-                self._emit_machine_event(is_substantive=False)
+                event_name = "heartbeat" if self.output_schema == "canonical" else "progress"
+                self._emit_machine_event(is_substantive=False, event=event_name)
             else:
                 self._emit_once(prefix="progress_heartbeat")
 
@@ -145,19 +173,23 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
             line = f"{line} {counters_text}"
         print(line, file=self.stream, flush=True)
 
-    def _emit_machine_event(self, *, is_substantive: bool) -> None:
+    def _emit_machine_event(self, *, is_substantive: bool, event: str) -> None:
         if not self.enabled:
             return
 
         now = time.monotonic()
         with self._lock:
             signature = (
+                str(event),
                 self.phase,
                 json.dumps(self._counters, sort_keys=True, default=str),
                 self._detail,
                 self._window_date,
                 self._window_index,
                 self._window_total,
+                self._provider,
+                self._canonical_key,
+                self._rate_limit_state,
             )
 
             if not is_substantive:
@@ -172,11 +204,16 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
                 return
 
             payload: dict[str, object] = {
-                "event": "progress",
+                "event": str(event),
                 "phase": self.phase,
                 "elapsed_seconds": round(now - self._started_at, 1),
                 "counters": dict(self._counters),
             }
+            if self.output_schema == "canonical":
+                if self.domain:
+                    payload["domain"] = self.domain
+                if self.command_path:
+                    payload["command_path"] = list(self.command_path)
             if self._detail:
                 payload["detail"] = self._detail
             if self._window_date:
@@ -185,6 +222,12 @@ class ProgressHeartbeat(AbstractContextManager["ProgressHeartbeat"]):
                 payload["window_index"] = self._window_index
             if self._window_total is not None:
                 payload["window_total"] = self._window_total
+            if self._provider:
+                payload["provider"] = self._provider
+            if self._canonical_key:
+                payload["canonical_key"] = self._canonical_key
+            if self._rate_limit_state:
+                payload["rate_limit_state"] = self._rate_limit_state
 
             self._last_machine_signature = signature
             self._last_machine_emitted_at = now

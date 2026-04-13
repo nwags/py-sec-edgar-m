@@ -1,0 +1,6 @@
+{
+  "repo": "py-sec-edgar-m",
+  "local_shims_that_must_remain": "py_sec_edgar.wave4_shared first-hop facade, source-mode fallback layers, flat m_cache_shared compatibility shims, aug/augmentations command alias compatibility",
+  "earliest_cleanup_condition": "after multiple stable release cycles, consistently green cross-repo RC validation, compatibility-impacting user-testing gate success, and high rollback confidence",
+  "notes": "SEC remains the most conservative retirement case; no removals in Wave 7"
+}

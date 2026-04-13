@@ -278,6 +278,20 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
 
 - `refdata refresh` now resolves raw SEC source inputs with a deterministic fallback chain: configured `<project_root>/refdata/sec_sources` first, then canonical bundled `refdata/sec_sources`.
 - Fallback is limited to raw-source bootstrap for `refdata refresh`; runtime artifact destinations (download/cache root, merged index path, normalized output root) remain bound to configured runtime paths.
+
+## Migration notes (Wave 1 parallel standardization patch)
+
+- Added additive canonical command surface `m-cache sec ...` with thin wrappers into existing SEC pipeline/service handlers.
+- Preserved `py-sec-edgar ...` as the compatibility surface; legacy machine output defaults remain unchanged.
+- Added additive legacy selector `--output-schema legacy|canonical` on legacy machine-output commands (`lookup refresh`, `monitor poll`, `reconcile run`).
+- Made `aug` canonical and kept `augmentations` as a backward-compatible alias on both `py-sec-edgar` and `m-cache sec`.
+- Added canonical `m-cache.toml` loader with precedence (`--config`, `M_CACHE_CONFIG`, local file, legacy env, defaults) and effective config validation.
+- Materialized canonical provider registry artifact `refdata/normalized/provider_registry.parquet` with optional local overrides from `refdata/inputs/provider_registry_overrides.parquet|csv`.
+- Preserved `sec_source_surfaces.parquet` as SEC-specific companion authority metadata.
+- Added additive canonical companion artifact `resolution_events.parquet` while preserving existing `filing_resolution_provenance.parquet`.
+- `resolution_events.parquet` is the Wave 1 shared/canonical comparison surface; `filing_resolution_provenance.parquet` is a sanctioned SEC-specific companion artifact in this wave (not a silent divergence).
+- Added additive canonical reconciliation columns to persisted reconciliation artifacts while preserving existing rows/fields.
+- Reserved shared families (`providers`, `resolve`, `storage`, `audit`, `api`) as help-visible stubs for later waves; no broad SEC CLI redesign in this patch.
 - Missing raw inputs now fail with a clearer actionable error listing checked roots and remediation guidance.
 
 ## Migration notes (README positioning + roadmap cleanup patch)
@@ -324,6 +338,24 @@ Refactor the legacy repo into a special-situations EDGAR ingestion engine with s
   - `not_found`
   - `remote_fetch_failed`
 - Canonicalized API content path behavior to always derive local file path from metadata filename under configured `download_root` (`<download_root>/<filename.lstrip('/')>`), preserving existing SEC mirror layout.
+
+## Migration notes (Wave 2 provider/rate-limit/resolve/API transparency patch)
+
+- Implemented canonical additive provider inspection commands:
+  - `m-cache sec providers list`
+  - `m-cache sec providers show --provider <id>`
+- Replaced Wave 1 `resolve` stub with canonical additive command:
+  - `m-cache sec resolve filing --accession-number ... --resolution-mode ...`
+- Kept shared resolution modes explicit and transparent:
+  - `local_only` and `resolve_if_missing` implemented on this path,
+  - `refresh_if_stale` returns explicit unsupported-mode failure (no silent downgrade).
+- Added additive API resolution transparency on existing endpoints:
+  - `GET /filings/{accession_number}` now includes `resolution_meta` and supports explicit content-resolution probe controls.
+  - `GET /filings/{accession_number}/content` now emits additive `X-M-Cache-*` resolution/provider/rate-limit headers and structured `resolution_meta` on error payloads.
+- Preserved existing endpoint paths and status-code behavior defaults.
+- Kept SEC-specific provenance companion strategy additive:
+  - shared canonical `resolution_events.parquet` remains cross-repo comparison surface,
+  - SEC-specific `filing_resolution_provenance.parquet` remains sanctioned companion artifact.
 - Added injectable API fetch wrapper with default `ProxyRequest.GET_FILE` implementation for deterministic offline tests.
 - Updated `GET /filings/{accession_number}` to behave as metadata-first endpoint: returns metadata when resolvable from local lookup or merged index even if local content is currently missing.
 - Updated `GET /filings/{accession_number}/content` to fetch-and-persist on local miss and return actionable `502` detail on remote fetch failures.
