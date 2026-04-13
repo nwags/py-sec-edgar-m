@@ -16,7 +16,12 @@ def filing_parties_parquet_path(config: AppConfig) -> Path:
 def load_filing_parties_parquet(config: AppConfig) -> pd.DataFrame:
     path = filing_parties_parquet_path(config)
     if not path.exists():
-        raise FileNotFoundError(f"Missing filing-party artifact: {path}")
+        raise FileNotFoundError(
+            "Missing filing-party artifact: "
+            f"{path}. Build it first with a backfill run that includes "
+            "`--persist-filing-parties` (for example: "
+            "`py-sec-edgar backfill --execute-downloads --persist-filing-parties`)."
+        )
     return pd.read_parquet(path)
 
 

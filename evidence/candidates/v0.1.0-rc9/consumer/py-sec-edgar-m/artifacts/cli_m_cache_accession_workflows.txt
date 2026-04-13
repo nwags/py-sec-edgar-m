@@ -1,0 +1,18 @@
+ACCESSION=0001104659-26-032804
+$ m-cache sec resolve filing --accession-number 0001104659-26-032804 --resolution-mode local_only
+{"command_path": ["m-cache", "sec", "resolve", "filing"], "counters": {}, "domain": "sec", "elapsed_seconds": 0.0, "event": "started", "phase": "resolve.filing"}
+{"canonical_key": "0001104659-26-032804", "command_path": ["m-cache", "sec", "resolve", "filing"], "counters": {"attempted_count": 1, "failed_count": 0, "succeeded_count": 1}, "domain": "sec", "elapsed_seconds": 0.0, "event": "progress", "phase": "resolve.filing.result", "provider": "sec", "rate_limit_state": "ok"}
+{"canonical_key": "0001104659-26-032804", "command_path": ["m-cache", "sec", "resolve", "filing"], "counters": {"attempted_count": 1, "failed_count": 0, "succeeded_count": 1}, "domain": "sec", "elapsed_seconds": 0.0, "event": "completed", "phase": "resolve.filing.result", "provider": "sec", "rate_limit_state": "ok"}
+{"command_path": ["m-cache", "sec", "resolve", "filing"], "counters": {"attempted_count": 1, "failed_count": 0, "succeeded_count": 1}, "deferred": false, "domain": "sec", "elapsed_seconds": 0.0, "errors": [], "finished_at": "2026-04-13T03:41:12Z", "persisted_locally": true, "provider_requested": "sec", "provider_used": null, "rate_limit_state": {"deferred": false, "deferred_until": null, "provider_id": "sec", "rate_limited": false}, "rate_limited": false, "reason_code": "local_hit", "remote_attempted": false, "resolution_mode": "local_only", "retry_count": 0, "selection_outcome": "served_locally", "served_from": "local_cache", "started_at": "2026-04-13T03:41:12Z", "status": "ok", "warnings": []}
+
+$ m-cache sec aug inspect-target --accession-number 0001104659-26-032804 --json
+{"augmentation_meta": {"augmentation_available": false, "augmentation_stale": null, "augmentation_types_present": [], "inspect_path": "/filings/0001104659-26-032804/augmentations", "last_augmented_at": null, "source_text_version": "sha256:54fd4500f17f055a97e7274117acd2162804c13c23a2c444b775e4a149554b97", "target_descriptor": {"canonical_key": "0001104659-26-032804", "document_time_reference": null, "domain": "sec", "language": "en", "producer_hints": {}, "resource_family": "filing", "source_text_version": "sha256:54fd4500f17f055a97e7274117acd2162804c13c23a2c444b775e4a149554b97", "text_source": "api:/filings/0001104659-26-032804/content"}}, "canonical_key": "0001104659-26-032804", "canonical_types_present": [], "domain": "sec", "inspect_path": "/filings/0001104659-26-032804/augmentations", "resource_family": "filing", "run_count": 0, "source_text_version": "sha256:54fd4500f17f055a97e7274117acd2162804c13c23a2c444b775e4a149554b97", "target_descriptor": {"canonical_key": "0001104659-26-032804", "document_time_reference": null, "domain": "sec", "language": "en", "producer_hints": {}, "resource_family": "filing", "source_text_version": "sha256:54fd4500f17f055a97e7274117acd2162804c13c23a2c444b775e4a149554b97", "text_source": "api:/filings/0001104659-26-032804/content"}}
+
+$ m-cache sec aug inspect-runs --accession-number 0001104659-26-032804 --json
+{"runs": []}
+
+$ m-cache sec aug inspect-artifacts --accession-number 0001104659-26-032804 --json
+{"artifacts": []}
+
+$ m-cache sec aug events --accession-number 0001104659-26-032804 --json --limit 5
+{"events": []}

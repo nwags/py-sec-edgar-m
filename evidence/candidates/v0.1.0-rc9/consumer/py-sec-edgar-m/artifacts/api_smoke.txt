@@ -1,0 +1,17 @@
+ACCESSION=0001104659-26-032804
+API_PID=58
+$ curl -sS http://127.0.0.1:8017/health
+curl: (7) Couldn't connect to server
+
+$ curl -sS 'http://127.0.0.1:8017/filings/0001104659-26-032804?include_augmentations=true'
+curl: (7) Couldn't connect to server
+
+/bin/bash: line 15: kill: (58) - No such process
+$ tail -n 40 /tmp/pysec_api_rc9.log
+INFO:     Started server process [58]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+ERROR:    could not bind on any address out of [('127.0.0.1', 8017)]
+INFO:     Waiting for application shutdown.
+INFO:     Application shutdown complete.
+{"api_host": "127.0.0.1", "api_port": 8017, "effective_config": {"domains": {"sec": {"cache_root": "/home/nick/Code/py-sec-edgar-m/.sec_cache", "default_resolution_mode": "local_only", "enabled": true, "lookup_root": "/home/nick/Code/py-sec-edgar-m/refdata/normalized", "normalized_refdata_root": "/home/nick/Code/py-sec-edgar-m/refdata/normalized", "providers": {"sec": {"auth_env_var": null, "auth_type": "none", "backoff_policy": "exponential", "browse_discovery_allowed": true, "burst_limit": 1, "direct_resolution_allowed": true, "enabled": true, "fallback_priority": 10, "free_tier_notes": "Respect SEC fair-access policy and configured shared request budget.", "graceful_degradation_policy": "defer_and_report", "hard_limit": 5, "is_active": true, "notes": "Canonical SEC provider row for Wave 1.", "rate_limit_policy": "token_bucket", "retry_budget": 2, "soft_limit": 5, "supports_admin_refresh_if_stale": false, "supports_bulk_history": true, "supports_direct_resolution": true, "supports_incremental_refresh": true, "supports_public_resolve_if_missing": false}}, "runtime": {}}}, "global": {"app_root": "/home/nick/Code/py-sec-edgar-m", "default_progress_heartbeat_seconds": 0.0, "default_progress_json": false, "default_summary_json": false, "log_level": "INFO"}, "source_path": null}, "event": "service_startup", "mode": "api", "monitor_execute_extraction": false, "monitor_form_families": null, "monitor_form_types": null, "monitor_interval_seconds": 30.0, "monitor_persist_filing_parties": false, "monitor_refresh_lookup": true, "monitor_single_instance": true, "monitor_warm": true, "resolved_download_root": "/home/nick/Code/py-sec-edgar-m/.sec_cache/Archives", "resolved_normalized_refdata_root": "/home/nick/Code/py-sec-edgar-m/refdata/normalized", "resolved_project_root": "/home/nick/Code/py-sec-edgar-m"}

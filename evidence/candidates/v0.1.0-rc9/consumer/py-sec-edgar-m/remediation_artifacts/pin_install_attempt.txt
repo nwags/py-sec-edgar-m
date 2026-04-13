@@ -1,0 +1,14 @@
+$ pip install -r requirements/m_cache_shared_external.txt
+WARNING: The directory '/home/nick/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+Collecting m-cache-shared-ext @ git+https://github.com/m-cache/m_cache_shared_ext.git@v0.1.0-rc9 (from -r requirements/m_cache_shared_external.txt (line 2))
+  Cloning https://github.com/m-cache/m_cache_shared_ext.git (to revision v0.1.0-rc9) to /tmp/pip-install-m9w_bxyo/m-cache-shared-ext_ba1621da048e4f97870d18fe5ccb067a
+  Running command git clone --filter=blob:none --quiet https://github.com/m-cache/m_cache_shared_ext.git /tmp/pip-install-m9w_bxyo/m-cache-shared-ext_ba1621da048e4f97870d18fe5ccb067a
+  fatal: unable to access 'https://github.com/m-cache/m_cache_shared_ext.git/': Could not resolve host: github.com
+  error: subprocess-exited-with-error
+  
+  × git clone --filter=blob:none --quiet https://github.com/m-cache/m_cache_shared_ext.git /tmp/pip-install-m9w_bxyo/m-cache-shared-ext_ba1621da048e4f97870d18fe5ccb067a did not run successfully.
+  │ exit code: 128
+  ╰─> No available output.
+  
+  note: This error originates from a subprocess, and is likely not a problem with pip.
+ERROR: Failed to build 'm-cache-shared-ext' when git clone --filter=blob:none --quiet https://github.com/m-cache/m_cache_shared_ext.git /tmp/pip-install-m9w_bxyo/m-cache-shared-ext_ba1621da048e4f97870d18fe5ccb067a

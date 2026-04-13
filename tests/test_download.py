@@ -163,3 +163,16 @@ def test_get_response_invokes_rate_limiter():
     response = downloader.GET_RESPONSE("https://example.test/index")
     assert response is not None
     assert limiter.wait_calls == 1
+
+
+def test_download_failure_log_includes_context(caplog, tmp_path: Path):
+    session = DummySession([DummyResponse(status_code=404)])
+    downloader = ProxyRequest(session=session)
+
+    target = tmp_path / "file.txt"
+    with caplog.at_level("WARNING"):
+        ok = downloader.GET_FILE("https://example.test/file", str(target))
+
+    assert ok is False
+    assert "Download failed (reason=http_error, status=404, attempt=1" in caplog.text
+    assert "https://example.test/file" in caplog.text

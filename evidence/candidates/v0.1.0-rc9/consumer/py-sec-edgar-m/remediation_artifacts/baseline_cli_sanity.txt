@@ -1,0 +1,36 @@
+### baseline_cli_sanity
+2026-04-13T04:21:33Z
+/home/nick/Code/py-sec-edgar-m/.venv/bin/py-sec-edgar
+/home/nick/Code/py-sec-edgar-m/.venv/bin/m-cache
+Usage: py-sec-edgar [OPTIONS] COMMAND [ARGS]...
+
+  py-sec-edgar command line interface.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  aug             Canonical short-name alias for augmentation commands.
+  augmentations   Reviewer/operator augmentation inspection commands.
+  backfill
+  filing-parties  Filing-party data query operations.
+  index           EDGAR index operations.
+  lookup          Local lookup index operations.
+  monitor         Feed-driven monitoring and cache-warming operations.
+  reconcile       Feed-plus-index reconciliation operations.
+  refdata         Reference-data operations.
+Usage: m-cache [OPTIONS] COMMAND [ARGS]...
+
+  Canonical shared command surface.
+
+Options:
+  --help  Show this message and exit.
+
+Commands:
+  sec
+--- pin file ---
+# Promoted RC9 shared-package baseline pin for consumer validation.
+m-cache-shared-ext @ git+https://github.com/m-cache/m_cache_shared_ext.git@v0.1.0-rc9
+--- shared package state ---
+WARNING: The directory '/home/nick/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+WARNING: Package(s) not found: m-cache-shared-ext

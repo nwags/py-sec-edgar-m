@@ -205,4 +205,4 @@ def test_wave6_external_pin_file_is_explicit_git_tag() -> None:
     ]
     assert lines
     assert lines[0].startswith("m-cache-shared-ext @ git+")
-    assert "@v0.1.0-rc2" in lines[0]
+    assert "@v0.1.0-rc9" in lines[0]

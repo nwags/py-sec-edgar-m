@@ -1,0 +1,7 @@
+$ python socket bind test
+Traceback (most recent call last):
+  File "<stdin>", line 5, in <module>
+  File "/home/nick/miniforge3/lib/python3.13/socket.py", line 233, in __init__
+    _socket.socket.__init__(self, family, type, proto, fileno)
+    ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+PermissionError: [Errno 1] Operation not permitted

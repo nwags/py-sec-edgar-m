@@ -213,6 +213,7 @@ def test_filing_parties_query_missing_artifact_fails_cleanly(monkeypatch, tmp_pa
     result = CliRunner().invoke(cli.main, ["filing-parties", "query"])
     assert result.exit_code != 0
     assert "Missing filing-party artifact" in result.output
+    assert "--persist-filing-parties" in result.output
 
 
 def test_filing_parties_query_empty_match_human_readable(monkeypatch, tmp_path):

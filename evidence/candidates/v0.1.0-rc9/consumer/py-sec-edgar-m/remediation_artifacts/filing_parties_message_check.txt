@@ -1,0 +1,2 @@
+$ py-sec-edgar filing-parties query --json
+Error: Missing filing-party artifact: /home/nick/Code/py-sec-edgar-m/refdata/normalized/filing_parties.parquet. Build it first with a backfill run that includes `--persist-filing-parties` (for example: `py-sec-edgar backfill --execute-downloads --persist-filing-parties`).

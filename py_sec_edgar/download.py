@@ -122,7 +122,17 @@ class ProxyRequest(object):
             "error_class": error_class,
             "retry_exhausted": bool(retry_exhausted),
         }
-        logger.warning("Download failed", extra={"download_failure": self.last_failure})
+        status_value = "n/a" if status_code is None else str(status_code)
+        logger.warning(
+            "Download failed (reason=%s, status=%s, attempt=%s, retry_exhausted=%s, url=%s, filepath=%s)",
+            reason,
+            status_value,
+            attempt,
+            bool(retry_exhausted),
+            url,
+            filepath,
+            extra={"download_failure": self.last_failure},
+        )
 
     def _normalize_request_exception_reason(self, exc: Exception) -> str:
         if isinstance(exc, requests.Timeout):
